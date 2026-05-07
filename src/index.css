@@ -1,0 +1,82 @@
+:root {
+  color-scheme: dark;
+  /* Tom biblioteca: papel envelhecido à luz baixa — confortável para leitura longa */
+  --bg-deep: #0c0a08;
+  --bg: #14110e;
+  --surface: rgba(30, 26, 22, 0.94);
+  --surface-2: rgba(42, 36, 30, 0.75);
+  --surface-deep: rgba(12, 10, 8, 0.97);
+  --border: rgba(220, 190, 150, 0.08);
+  --border-strong: rgba(230, 200, 160, 0.14);
+  --text: #f5f0e8;
+  --text-read: #e8e0d4;
+  --muted: #9c948a;
+  /* Destaque: âmbar suave (convida a clicar sem gritar) */
+  --accent: #e4b86a;
+  --accent-dim: rgba(228, 184, 106, 0.42);
+  /* Secundária: verde-sálvia para links e detalhes frios */
+  --accent-2: #9bc4b5;
+  --accent-2-dim: rgba(155, 196, 181, 0.35);
+  --danger: #e8a8a8;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --radius-pill: 999px;
+  --shadow-elevated: 0 24px 56px -18px rgba(0, 0, 0, 0.55);
+  --shadow-soft: 0 12px 40px rgba(0, 0, 0, 0.38);
+  --glow-warm: 0 0 80px rgba(200, 150, 80, 0.08);
+  --font-ui: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-read: "Literata", "Georgia", serif;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background-color: var(--bg-deep);
+  background-image:
+    radial-gradient(ellipse 100% 70% at 50% -25%, rgba(120, 80, 50, 0.2), transparent 52%),
+    radial-gradient(ellipse 50% 45% at 100% 0%, rgba(90, 120, 100, 0.12), transparent 45%),
+    radial-gradient(ellipse 40% 35% at 0% 100%, rgba(140, 100, 60, 0.1), transparent 48%),
+    linear-gradient(175deg, var(--bg) 0%, var(--bg-deep) 100%);
+  background-attachment: fixed;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(228, 184, 106, 0.28);
+  color: var(--text);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+a:focus-visible,
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
