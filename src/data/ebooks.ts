@@ -27,7 +27,7 @@ export const ebooks: Ebook[] = [
     id: "seducao-diabolica",
     title: "Sedução Diabólica",
     author: "Barbara Cartland",
-    sourceLabel: "Arquivo em public/stories/seducao-diabolica.txt",
+    sourceLabel: "Texto disponível nesta leitura",
     blurb:
       "Leitura por capítulos: o personagem comenta enquanto você rola. Trecho extra no texto só se você pedir (ex.: continua o capítulo) após a resposta dele.",
     cardGradient: "linear-gradient(135deg, #3a2832 0%, #221820 50%, #120c10 100%)",

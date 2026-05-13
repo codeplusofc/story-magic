@@ -31,9 +31,8 @@ function normalizeLocalStoryText(raw: string): string {
 async function fetchLocalStoryText(url: string): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(
-      `Não foi possível abrir o arquivo (${res.status}). Coloque o .txt em public${url} (mesmo caminho que o URL).`,
-    );
+    console.warn("Falha ao carregar texto local:", url, res.status);
+    throw new Error("Não foi possível carregar o texto desta leitura. Tente de novo daqui a pouco.");
   }
   const raw = await res.text();
   return normalizeLocalStoryText(raw);
@@ -379,10 +378,9 @@ export function App() {
             if (el) el.scrollTop = el.scrollHeight;
           });
         } catch (contErr) {
+          console.warn("Falha ao estender a leitura:", contErr);
           setError(
-            contErr instanceof Error
-              ? `${contErr.message} (a conversa foi salva; a leitura não foi estendida.)`
-              : "Não foi possível gerar a continuação da leitura.",
+            "Não foi possível acrescentar um trecho novo no texto agora. O que você conversou no chat foi mantido.",
           );
         }
       };
@@ -393,7 +391,12 @@ export function App() {
         });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro desconhecido");
+      console.warn("Falha no envio da mensagem:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Não foi possível concluir o envio. Tente de novo.",
+      );
       setThreads((prev) => ({
         ...prev,
         [character.id]: [...(prev[character.id] ?? []).filter((m) => m.id !== userMsg.id)],
@@ -418,16 +421,12 @@ export function App() {
               traz marcas como <strong>CAPÍTULO …</strong>) enquanto alguém da ficção{" "}
               <strong>acompanha o seu ritmo</strong> no chat. Se quiser um deslize a mais na narrativa, peça
               por escrito — por exemplo <strong>continua o capítulo</strong> — e o texto ganha um trecho
-              extra <strong>só quando você pedir</strong>. Opcional: chaves Groq ou Gemini no{" "}
-              <code className="inline-code">.env</code> deixam as respostas mais vivas; sem elas, o app ainda
-              funciona em modo demonstração.
+              extra <strong>só quando você pedir</strong>. Neste site, o chat pode usar inteligência artificial
+              ou respostas de demonstração — o indicador ao lado resume o que está valendo agora.
             </p>
           </div>
-          <div
-            className="pill"
-            title="Opcional: no arquivo .env na pasta do projeto, defina VITE_GROQ_API_KEY ou VITE_GEMINI_API_KEY. Se as duas existirem, o app tenta uma e, em caso de limite, a outra."
-          >
-            Modelo: <strong>{providerLabel}</strong>
+          <div className="pill" title="Mostra se o chat usa IA em tempo real ou respostas de demonstração.">
+            Chat: <strong>{providerLabel}</strong>
           </div>
         </header>
 
@@ -509,11 +508,8 @@ export function App() {
             ) : null}
           </p>
         </div>
-        <div
-          className="pill"
-          title="Opcional: no arquivo .env na pasta do projeto, defina VITE_GROQ_API_KEY ou VITE_GEMINI_API_KEY. Se as duas existirem, o app tenta uma e, em caso de limite, a outra."
-        >
-          Modelo: <strong>{providerLabel}</strong>
+        <div className="pill" title="Mostra se o chat usa IA em tempo real ou respostas de demonstração.">
+          Chat: <strong>{providerLabel}</strong>
         </div>
       </header>
 

@@ -196,14 +196,13 @@ function hasGeminiKey(): boolean {
   return Boolean(import.meta.env.VITE_GEMINI_API_KEY?.trim());
 }
 
-/** Texto curto para o pill da UI. */
+/** Texto curto para o pill da UI (linguagem para quem lê, não para quem desenvolve). */
 export function providerDisplayLabel(): string {
   const g = hasGroqKey();
   const m = hasGeminiKey();
-  if (g && m) return "Groq + Gemini (troca em 429)";
-  if (g) return "Groq (grátis)";
-  if (m) return "Gemini (grátis)";
-  return "Modo demo (sem chave)";
+  if (g && m) return "IA ativa (com serviço reserva)";
+  if (g || m) return "IA ativa";
+  return "Modo demonstração";
 }
 
 function is429Error(err: unknown): boolean {
