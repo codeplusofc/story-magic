@@ -96,21 +96,16 @@ function httpErrorMessage(
   corpo: string,
 ): Error {
   const trecho = corpo.slice(0, 280);
+  console.warn(`[${provedor}] HTTP ${status} (${modelOrHint}):`, trecho);
   if (status === 429) {
-    const extra =
-      provedor === "Gemini"
-        ? " Veja Uso em aistudio.google.com. Se no .env existir também VITE_GROQ_API_KEY, o app troca sozinho para Groq quando o Gemini estiver em limite."
-        : " Aguarde ou veja limites em console.groq.com. Se existir VITE_GEMINI_API_KEY, o app tenta Gemini em seguida (429).";
     return new Error(
-      `${provedor}: limite de uso (429) — cota ou muitas requisições.${extra}`,
+      "O serviço de inteligência artificial está no limite de uso no momento. Aguarde um pouco e tente de novo.",
     );
   }
   if (status === 401 || status === 403) {
-    return new Error(
-      `${provedor}: acesso negado (${status}). Verifique se a chave no .env está correta e ativa.`,
-    );
+    return new Error("Não foi possível acessar o serviço de inteligência artificial.");
   }
-  return new Error(`${provedor} (${modelOrHint}): ${status} ${trecho}`.trim());
+  return new Error("Não foi possível gerar a resposta agora. Tente de novo em instantes.");
 }
 
 async function groqComplete(
@@ -140,7 +135,7 @@ async function groqComplete(
     choices?: { message?: { content?: string } }[];
   };
   const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error("Groq: resposta vazia");
+  if (!text) throw new Error("A resposta da IA veio vazia. Tente de novo.");
   return text;
 }
 
@@ -183,7 +178,7 @@ async function geminiComplete(
     candidates?: { content?: { parts?: { text?: string }[] } }[];
   };
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("")?.trim();
-  if (!text) throw new Error("Gemini: resposta vazia");
+  if (!text) throw new Error("A resposta da IA veio vazia. Tente de novo.");
   return text;
 }
 
@@ -234,7 +229,7 @@ async function callLlmWith429Fallback(
     chain.push({ id: "gemini", run: () => geminiComplete(geminiKey, system, messages, mMax) });
 
   if (chain.length === 0) {
-    throw new Error("Nenhuma chave de API (VITE_GROQ_API_KEY ou VITE_GEMINI_API_KEY).");
+    throw new Error("Nenhum serviço de IA está configurado neste ambiente.");
   }
 
   let lastErr: unknown;
