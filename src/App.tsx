@@ -748,6 +748,9 @@ export function App() {
           <a href="https://www.gutenberg.org" target="_blank" rel="noreferrer">
             Project Gutenberg
           </a>
+          <span className="home-credit">
+            Desenvolvido por <strong>Guilherme Pinheiro</strong>
+          </span>
         </footer>
       </div>
     );

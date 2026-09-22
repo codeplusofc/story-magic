@@ -808,6 +808,16 @@
   color: var(--accent-2);
 }
 
+.home-credit {
+  display: block;
+  margin-top: 0.5rem;
+}
+
+.home-credit strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .home-foot {
   margin-top: 4rem;
   padding-top: 1.4rem;

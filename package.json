@@ -2,6 +2,7 @@
   "name": "storyverse",
   "private": true,
   "version": "0.0.1",
+  "author": "Guilherme Pinheiro",
   "type": "module",
   "scripts": {
     "dev": "vite",
