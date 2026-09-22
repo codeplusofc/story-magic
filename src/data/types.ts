@@ -1,37 +1,38 @@
 export type StoryCharacter = {
   id: string;
   name: string;
+  /** Nome curto para botões e sugestões (ex.: "Holmes" em vez de "Sherlock Holmes"). */
+  shortName?: string;
   role: string;
   color: string;
   systemHint: string;
+  /** Primeira fala no chat, na voz do personagem. */
+  greeting?: string;
+};
+
+/** Exemplo de conversa exibido na página inicial (só para livros em destaque). */
+export type HeroDemo = {
+  chapterLabel: string;
+  /** Início real do texto do livro. */
+  pageOpening: string;
+  question: string;
+  answer: string;
 };
 
 export type Ebook = {
   id: string;
+  /** Número do livro no Project Gutenberg — o texto é baixado de lá. */
+  gutenbergId: number;
   title: string;
   author: string;
-  sourceLabel: string;
-  sourceUrl?: string;
-  blurb: string;
-  cardGradient: string;
-  characters: StoryCharacter[];
-  /**
-   * Caminho público do .txt (ex.: `/stories/livro.txt` em `public/stories/livro.txt`).
-   * Mutuamente exclusivo com `embeddedFullText`.
-   */
-  localStoryUrl?: string;
-  /** Texto integral embutido (história original curta). Mutuamente exclusivo com `localStoryUrl`. */
-  embeddedFullText?: string;
-  /** Idioma do texto integral, para o prompt da IA. */
+  /** Gênero curto exibido na capa (ex.: "Mistério"). */
+  genre?: string;
+  blurb?: string;
+  /** Capa do Gutenberg; sem ela, o app desenha uma capa tipográfica. */
+  coverUrl?: string;
+  /** Idioma do texto integral, para o prompt da IA e o selo na estante. */
   textLanguage: "pt" | "en";
-  /**
-   * Se true, frases como "quero seguir" / "continuar" após a resposta do personagem
-   * pedem um trecho narrativo novo (no capítulo atual, se `chapterReading` estiver ativo).
-   */
-  readerContinuesStory?: boolean;
-  /**
-   * Mostra um capítulo de cada vez (marcadores CAPÍTULO no .txt), navegação entre capítulos
-   * e comentários do personagem conforme a rolagem dentro do capítulo.
-   */
-  chapterReading?: boolean;
+  /** Personagens escritos à mão. Sem eles, a IA sugere os personagens ao abrir o livro. */
+  characters?: StoryCharacter[];
+  demo?: HeroDemo;
 };

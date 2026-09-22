@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ebooks, getEbook } from "./data/ebooks";
+import { featuredBooks, suggestedBooks } from "./data/ebooks";
 import type { Ebook, StoryCharacter } from "./data/types";
 import {
   characterReply,
-  narrateStoryContinuation,
   providerDisplayLabel,
-  wantsStoryContinuation,
+  USER_MESSAGE_MAX_CHARS,
   type ChatTurn,
 } from "./lib/ai";
+import { loadCast } from "./lib/cast";
 import { splitIntoChapters } from "./lib/chapters";
+import { fetchBookText, searchBooks, type SearchLanguage } from "./lib/gutenberg";
 import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
 import { excerptNearScrollRatio } from "./lib/readingContext";
 import "./App.css";
@@ -19,129 +20,403 @@ const EMPTY_THREAD: Msg[] = [];
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 
+type ReadingTheme = "night" | "sepia";
+const FONT_SIZES = [0.95, 1.05, 1.17, 1.3];
+const PREFS_KEY = "storyverse:reading-prefs";
+
 function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Remove linhas técnicas comuns de .txt digitalizados. */
-function normalizeLocalStoryText(raw: string): string {
-  return raw.replace(/^#KBYTECOUNT\s*\d*\s*\r?\n/i, "").trimStart();
-}
-
-async function fetchLocalStoryText(url: string): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.warn("Falha ao carregar texto local:", url, res.status);
-    throw new Error("Não foi possível carregar o texto desta leitura. Tente de novo daqui a pouco.");
-  }
-  const raw = await res.text();
-  return normalizeLocalStoryText(raw);
-}
-
-function initialThreadsFor(book: { characters: StoryCharacter[]; chapterReading?: boolean }): Record<string, Msg[]> {
-  const note = book.chapterReading
-    ? " Comento enquanto você lê o capítulo; se quiser um trecho extra só neste capítulo, diga “continua o capítulo” depois de falarmos."
-    : "";
+function initialThreadsFor(cast: StoryCharacter[]): Record<string, Msg[]> {
   const initial: Record<string, Msg[]> = {};
-  for (const c of book.characters) {
+  for (const c of cast) {
     initial[c.id] = [
       {
         id: uid(),
         role: "assistant",
-        text: `Sou ${c.name}. Estou aqui com você nesta leitura — o que gostaria de saber ou inventar juntos?${note}`,
+        text:
+          c.greeting ??
+          `Olá! Eu sou ${c.name}. Vamos ler juntos? Pode me perguntar o que quiser sobre a história.`,
       },
     ];
   }
   return initial;
 }
 
+function loadPrefs(): { theme: ReadingTheme; fontStep: number } {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as { theme?: string; fontStep?: number };
+      return {
+        theme: p.theme === "sepia" ? "sepia" : "night",
+        fontStep:
+          typeof p.fontStep === "number" && p.fontStep >= 0 && p.fontStep < FONT_SIZES.length
+            ? p.fontStep
+            : 1,
+      };
+    }
+  } catch {
+    // Sem armazenamento disponível: usa o padrão.
+  }
+  return { theme: "night", fontStep: 1 };
+}
+
+function shortNameOf(c: StoryCharacter): string {
+  return c.shortName ?? c.name;
+}
+
+function listNames(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} e ${names[names.length - 1]}`;
+}
+
+function suggestionsFor(c: StoryCharacter): string[] {
+  return [
+    `Quem é você de verdade, ${shortNameOf(c)}?`,
+    "O que está sentindo agora?",
+    "O que acha do que acabou de acontecer?",
+  ];
+}
+
+type Block = { kind: "heading" | "p"; text: string };
+
+/**
+ * Os .txt do Gutenberg quebram as linhas a cada ~70 caracteres e separam parágrafos por
+ * linha em branco: cada bloco vira um parágrafo; blocos curtos sem pontuação viram subtítulos.
+ */
+function toBlocks(text: string, skipHeadline?: string): Block[] {
+  // Ignora o "(1/2)" que o app acrescenta quando divide um capítulo longo em partes.
+  const norm = (s: string) =>
+    s.toUpperCase().replace(/\s*\(\d+\/\d+\)$/, "").replace(/\s+/g, " ").replace(/[\].\s]+$/, "");
+  const paras = text
+    .replace(/\r\n/g, "\n")
+    .split(/\n[ \t]*\n/)
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  if (skipHeadline && paras[0] && norm(paras[0]) === norm(skipHeadline)) paras.shift();
+  return paras.map((p) => {
+    const isShortTitle = p.length <= 60 && !/[.!?…:;,"»”)\-—]$/.test(p);
+    const isUpperTitle = p.length <= 90 && p === p.toUpperCase() && /[A-Z]/.test(p);
+    return { kind: (isShortTitle || isUpperTitle) && !p.startsWith("—") ? "heading" : "p", text: p };
+  });
+}
+
+/** O Gutenberg marca itálico como _assim_. */
+function withItalics(text: string): React.ReactNode {
+  const parts = text.split(/_([^_]+)_/);
+  return parts.length === 1 ? text : parts.map((p, i) => (i % 2 === 1 ? <em key={i}>{p}</em> : p));
+}
+
+function Avatar({ character, size = "md" }: { character: StoryCharacter; size?: "sm" | "md" | "lg" }) {
+  return (
+    <span
+      className={`avatar avatar-${size}`}
+      style={{ "--c": character.color } as React.CSSProperties}
+      aria-hidden="true"
+    >
+      {shortNameOf(character).replace(/^(O|A|Mr\.|Mrs\.|Dr\.)\s+/i, "").charAt(0).toUpperCase()}
+    </span>
+  );
+}
+
+/** Capa real do Gutenberg; se não houver (ou falhar), desenha uma capa tipográfica. */
+function BookCover({ book }: { book: Ebook }) {
+  const [status, setStatus] = useState<"loading" | "loaded" | "failed">("loading");
+  return (
+    <div className="cover">
+      {book.coverUrl && status !== "failed" ? (
+        <img
+          className={`cover-photo ${status === "loaded" ? "is-loaded" : ""}`}
+          src={book.coverUrl}
+          alt=""
+          loading="lazy"
+          onLoad={() => setStatus("loaded")}
+          onError={() => setStatus("failed")}
+        />
+      ) : null}
+      <div className="cover-frame">
+        {book.genre ? <span className="cover-genre">{book.genre}</span> : null}
+        <span className="cover-title">{book.title}</span>
+        <span className="cover-ornament" aria-hidden="true">
+          ✦
+        </span>
+        <span className="cover-author">{book.author}</span>
+      </div>
+    </div>
+  );
+}
+
+function LangBadge({ book }: { book: Ebook }) {
+  return (
+    <span className={`lang-badge lang-${book.textLanguage}`}>
+      {book.textLanguage === "pt" ? "Em português" : "Texto em inglês"}
+    </span>
+  );
+}
+
+const Icon = {
+  back: (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  ),
+  next: (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 18l6-6-6-6" />
+    </svg>
+  ),
+  send: (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M22 2L11 13" />
+      <path d="M22 2l-7 20-4-9-9-4 20-7z" />
+    </svg>
+  ),
+  close: (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <path d="M18 6L6 18M6 6l12 12" />
+    </svg>
+  ),
+  search: (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M20 20l-3.5-3.5" />
+    </svg>
+  ),
+  moon: (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+    </svg>
+  ),
+  sun: (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
+  ),
+};
+
+const LANGUAGE_FILTERS: { id: SearchLanguage; label: string }[] = [
+  { id: "all", label: "Todos" },
+  { id: "pt", label: "Português" },
+  { id: "en", label: "Inglês" },
+];
+
+/** Busca no acervo inteiro do Project Gutenberg; sem busca, mostra sugestões prontas. */
+function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
+  const [query, setQuery] = useState("");
+  const [language, setLanguage] = useState<SearchLanguage>("all");
+  const [books, setBooks] = useState<Ebook[]>([]);
+  const [total, setTotal] = useState(0);
+  const [next, setNext] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [slow, setSlow] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const term = query.trim();
+  const searching = term.length >= 2;
+
+  useEffect(() => {
+    if (!searching) {
+      setStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setStatus("loading");
+    setSlow(false);
+    const slowTimer = setTimeout(() => !cancelled && setSlow(true), 5000);
+    const t = setTimeout(() => {
+      searchBooks(term, language)
+        .then((page) => {
+          if (cancelled) return;
+          setBooks(page.books);
+          setTotal(page.total);
+          setNext(page.next);
+          setStatus("ready");
+        })
+        .catch(() => !cancelled && setStatus("error"))
+        .finally(() => clearTimeout(slowTimer));
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      clearTimeout(slowTimer);
+    };
+  }, [term, searching, language]);
+
+  const loadMore = () => {
+    if (!next || loadingMore) return;
+    setLoadingMore(true);
+    searchBooks(term, language, next)
+      .then((page) => {
+        setBooks((prev) => [...prev, ...page.books]);
+        setNext(page.next);
+      })
+      .catch(() => setNext(null))
+      .finally(() => setLoadingMore(false));
+  };
+
+  const shown = searching ? books : suggestedBooks;
+
+  return (
+    <section className="explore" id="acervo">
+      <div className="shelf-head">
+        <h2>Explorar o acervo</h2>
+        <p>Mais de 70 mil livros em domínio público, direto do Project Gutenberg.</p>
+      </div>
+
+      <div className="explore-controls">
+        <label className="search-box">
+          {Icon.search}
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Busque por título ou autor, como Verne, Poe ou Austen"
+            aria-label="Buscar livros"
+          />
+        </label>
+        <div className="filter-pills" role="group" aria-label="Idioma do texto">
+          {LANGUAGE_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              className={`filter-pill ${language === f.id ? "active" : ""}`}
+              onClick={() => setLanguage(f.id)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {!searching ? (
+        <p className="explore-note">Sugestões para começar. Os personagens aparecem quando você abre o livro.</p>
+      ) : status === "error" ? (
+        <p className="explore-note">Não foi possível buscar livros agora. Tente de novo em instantes.</p>
+      ) : status === "loading" ? (
+        <p className="explore-note">
+          {slow
+            ? language === "pt"
+              ? "Procurando no acervo… quase lá."
+              : "O acervo é enorme e a busca pode levar até um minuto. Dica: o filtro Português responde bem mais rápido."
+            : "Procurando no acervo…"}
+        </p>
+      ) : status === "ready" && books.length === 0 ? (
+        <p className="explore-note">Nenhum livro encontrado para “{term}”.</p>
+      ) : (
+        <p className="explore-note">
+          {total.toLocaleString("pt-BR")} {total === 1 ? "livro" : "livros"} para “{term}”
+        </p>
+      )}
+
+      {status !== "error" ? (
+        <div className="result-grid">
+          {searching && status === "loading"
+            ? Array.from({ length: 8 }, (_, i) => (
+                <div key={i} className="result result-skeleton" aria-hidden="true">
+                  <div className="cover" />
+                  <span />
+                  <span />
+                </div>
+              ))
+            : shown.map((b) => (
+                <button key={b.id} type="button" className="result" onClick={() => onOpen(b)}>
+                  <BookCover book={b} />
+                  <strong>{b.title}</strong>
+                  <span>
+                    {b.author}
+                    {b.textLanguage === "pt" ? " · PT" : ""}
+                  </span>
+                </button>
+              ))}
+        </div>
+      ) : null}
+
+      {searching && status === "ready" && next ? (
+        <div className="explore-more">
+          <button type="button" className="btn" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? "Carregando…" : "Carregar mais"}
+          </button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function App() {
-  const [bookId, setBookId] = useState<string | null>(null);
-  const book = bookId ? getEbook(bookId) : undefined;
+  const [book, setBook] = useState<Ebook | null>(null);
 
   const [fullText, setFullText] = useState("");
-  /** Trechos extras no fim da leitura (obras sem modo capítulo). */
-  const [storyAppendix, setStoryAppendix] = useState("");
-  /** Trechos extras por índice de capítulo (`chapterReading`). */
-  const [chapterExtras, setChapterExtras] = useState<Record<number, string>>({});
   const [chapterIndex, setChapterIndex] = useState(0);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
+  /** Elenco do livro aberto (null enquanto a IA ainda está sugerindo). */
+  const [cast, setCast] = useState<StoryCharacter[] | null>(null);
   const [activeCharId, setActiveCharId] = useState<string>("");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [threads, setThreads] = useState<Record<string, Msg[]>>({});
+  /** No celular o chat abre como painel por cima do texto. */
+  const [chatOpen, setChatOpen] = useState(false);
+
+  const [prefs, setPrefs] = useState(loadPrefs);
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      // Preferência só não fica salva.
+    }
+  }, [prefs]);
 
   const readRef = useRef<HTMLDivElement>(null);
   const chatBodyRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [scrollRatio, setScrollRatio] = useState(0);
   /** Uma dica de “meio de capítulo” por índice de capítulo (evita várias mensagens seguidas). */
   const midChapterNudgeSentRef = useRef<Record<number, boolean>>({});
 
   useEffect(() => {
-    if (!book) {
-      setFullText("");
-      setStoryAppendix("");
-      setLoadState("idle");
-      setLoadError(null);
-      setScrollRatio(0);
-      return;
-    }
-
-    setStoryAppendix("");
-    setChapterExtras({});
-    setChapterIndex(0);
-    midChapterNudgeSentRef.current = {};
-
-    if (book.embeddedFullText) {
-      setFullText(book.embeddedFullText);
-      setLoadState("ready");
-      setLoadError(null);
-      setScrollRatio(0);
-      requestAnimationFrame(() => {
-        const el = readRef.current;
-        if (el) el.scrollTop = 0;
-      });
-      return;
-    }
-
+    if (!book) return;
     let cancelled = false;
 
-    if (book.localStoryUrl) {
-      setLoadState("loading");
-      setFullText("");
-      setLoadError(null);
-      setScrollRatio(0);
+    setLoadState("loading");
+    setLoadError(null);
+    setFullText("");
+    setChapterIndex(0);
+    setScrollRatio(0);
+    midChapterNudgeSentRef.current = {};
 
-      fetchLocalStoryText(book.localStoryUrl)
-        .then((text) => {
-          if (cancelled) return;
-          setFullText(text);
-          setLoadState("ready");
-          requestAnimationFrame(() => {
-            const el = readRef.current;
-            if (el) el.scrollTop = 0;
-          });
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          setLoadState("error");
-          setLoadError(err instanceof Error ? err.message : "Erro ao carregar o livro.");
+    fetchBookText(book.gutenbergId)
+      .then((text) => {
+        if (cancelled) return;
+        setFullText(text);
+        setLoadState("ready");
+        requestAnimationFrame(() => {
+          const el = readRef.current;
+          if (el) el.scrollTop = 0;
         });
+        return loadCast(book, text.slice(0, 3000)).then((list) => {
+          if (cancelled) return;
+          setCast(list);
+          setThreads((prev) => (Object.keys(prev).length > 0 ? prev : initialThreadsFor(list)));
+          setActiveCharId((id) => id || list[0]?.id || "");
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLoadState("error");
+        setLoadError(err instanceof Error ? err.message : "Erro ao carregar o livro.");
+      });
 
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    setLoadState("error");
-    setLoadError("Este título ainda não tem o livro completo disponível aqui.");
     return () => {
       cancelled = true;
     };
-  }, [book]);
+  }, [book, loadAttempt]);
 
   const onReadScroll = useCallback(() => {
     const el = readRef.current;
@@ -155,54 +430,35 @@ export function App() {
 
   const startBook = useCallback((b: Ebook) => {
     prevChapterIdxRef.current = null;
-    setBookId(b.id);
-    setActiveCharId(b.characters[0]?.id ?? "");
-    setThreads(initialThreadsFor(b));
+    setBook(b);
+    setCast(null);
+    setActiveCharId("");
+    setThreads({});
     setError(null);
     setInput("");
+    setChatOpen(false);
+    window.scrollTo({ top: 0 });
   }, []);
 
   const leaveBook = useCallback(() => {
     prevChapterIdxRef.current = null;
-    setBookId(null);
+    setBook(null);
+    setCast(null);
     setActiveCharId("");
     setThreads({});
     setError(null);
     setInput("");
     setFullText("");
-    setStoryAppendix("");
-    setChapterExtras({});
     setChapterIndex(0);
     midChapterNudgeSentRef.current = {};
     setLoadState("idle");
     setLoadError(null);
+    setChatOpen(false);
   }, []);
 
-  const retryLoad = useCallback(() => {
-    if (!book?.localStoryUrl) return;
-    setLoadState("loading");
-    setLoadError(null);
-    setFullText("");
-    setStoryAppendix("");
-    setChapterExtras({});
-    setChapterIndex(0);
-    midChapterNudgeSentRef.current = {};
-    fetchLocalStoryText(book.localStoryUrl)
-      .then((text) => {
-        setFullText(text);
-        setLoadState("ready");
-        requestAnimationFrame(() => {
-          const el = readRef.current;
-          if (el) el.scrollTop = 0;
-        });
-      })
-      .catch((err) => {
-        setLoadState("error");
-        setLoadError(err instanceof Error ? err.message : "Erro ao carregar o livro.");
-      });
-  }, [book]);
+  const retryLoad = useCallback(() => setLoadAttempt((n) => n + 1), []);
 
-  const characters = book?.characters ?? [];
+  const characters = cast ?? [];
   const character = useMemo(
     () => characters.find((c) => c.id === activeCharId) ?? characters[0],
     [activeCharId, characters],
@@ -214,22 +470,12 @@ export function App() {
     const el = chatBodyRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, activeCharId]);
+  }, [messages, activeCharId, loading, chatOpen]);
 
   const providerLabel = providerDisplayLabel();
 
-  const chapters = useMemo(() => {
-    if (!book?.chapterReading || !fullText) return [];
-    return splitIntoChapters(fullText);
-  }, [book?.chapterReading, fullText]);
-
-  const chapterMode = Boolean(book?.chapterReading && chapters.length > 0);
+  const chapters = useMemo(() => (fullText ? splitIntoChapters(fullText) : []), [fullText]);
   const currentChapter = chapters[chapterIndex] ?? chapters[0];
-
-  useEffect(() => {
-    if (!chapterMode || chapters.length === 0) return;
-    setChapterIndex((i) => Math.min(Math.max(0, i), chapters.length - 1));
-  }, [chapters.length, chapterMode]);
 
   useEffect(() => {
     setScrollRatio(0);
@@ -237,17 +483,16 @@ export function App() {
 
   /** Ao trocar de personagem, não dispara de novo a dica do meio se a rolagem já passou do meio. */
   useEffect(() => {
-    if (!chapterMode) return;
     const el = readRef.current;
     const max = el ? el.scrollHeight - el.clientHeight : 0;
     const r = !el || max <= 0 ? 0 : el.scrollTop / max;
     if (r >= 0.42) {
       midChapterNudgeSentRef.current[chapterIndex] = true;
     }
-  }, [activeCharId, chapterMode, chapterIndex]);
+  }, [activeCharId, chapterIndex]);
 
   useEffect(() => {
-    if (!chapterMode || !character || loadState !== "ready" || !currentChapter) return;
+    if (!character || loadState !== "ready" || !currentChapter) return;
 
     if (prevChapterIdxRef.current === null) {
       prevChapterIdxRef.current = chapterIndex;
@@ -269,10 +514,10 @@ export function App() {
       readRef.current?.scrollTo({ top: 0 });
       onReadScroll();
     });
-  }, [chapterIndex, chapterMode, character, loadState, currentChapter, activeCharId, onReadScroll]);
+  }, [chapterIndex, character, loadState, currentChapter, activeCharId, onReadScroll]);
 
   useEffect(() => {
-    if (!chapterMode || !character || !currentChapter || loadState !== "ready" || loading) return;
+    if (!character || !currentChapter || loadState !== "ready" || loading) return;
     if (scrollRatio < 0.42) return;
     if (midChapterNudgeSentRef.current[chapterIndex]) return;
     midChapterNudgeSentRef.current[chapterIndex] = true;
@@ -281,31 +526,30 @@ export function App() {
       ...prev,
       [character.id]: [...(prev[character.id] ?? []), { id: uid(), role: "assistant", text: line }],
     }));
-  }, [scrollRatio, chapterMode, character, currentChapter, loadState, loading, chapterIndex]);
+  }, [scrollRatio, character, currentChapter, loadState, loading, chapterIndex]);
 
-  const displayedStory = useMemo(() => {
-    if (!fullText) return "";
-    if (chapterMode && currentChapter) {
-      const extra = chapterExtras[chapterIndex] ?? "";
-      return extra.length > 0
-        ? `${currentChapter.body}\n\n* * *\n\n${extra}`
-        : currentChapter.body;
-    }
-    return storyAppendix.length > 0
-      ? `${fullText}\n\n* * *\n\n${storyAppendix}`
-      : fullText;
-  }, [fullText, storyAppendix, chapterMode, currentChapter, chapterExtras, chapterIndex]);
+  const displayedStory = currentChapter?.body ?? "";
 
-  const readingProgressPct = scrollRatio * 100;
+  const blocks = useMemo(
+    () => toBlocks(displayedStory, currentChapter?.label),
+    [displayedStory, currentChapter],
+  );
+  const dropCapIndex = useMemo(
+    () => blocks.findIndex((b) => b.kind === "p" && b.text.length > 80),
+    [blocks],
+  );
+
+  /** Posição aproximada no livro inteiro (capítulos anteriores + rolagem no atual). */
+  const readingProgressPct =
+    chapters.length > 0 ? ((chapterIndex + scrollRatio) / chapters.length) * 100 : 0;
   const textExcerpt = useMemo(
-    () => excerptNearScrollRatio(displayedStory, scrollRatio, 3200),
+    () => excerptNearScrollRatio(displayedStory, scrollRatio, 2000),
     [displayedStory, scrollRatio],
   );
 
-  async function onSend(e: React.FormEvent) {
-    e.preventDefault();
+  async function sendMessage(raw: string) {
     if (!book || !character || loadState !== "ready" || !displayedStory) return;
-    const text = input.trim();
+    const text = raw.trim();
     if (!text || loading) return;
 
     setError(null);
@@ -338,58 +582,6 @@ export function App() {
         ...prev,
         [character.id]: [...(prev[character.id] ?? []), botMsg],
       }));
-
-      const baseDisplay =
-        chapterMode && currentChapter
-          ? (() => {
-              const ex = chapterExtras[chapterIndex] ?? "";
-              return ex.length > 0
-                ? `${currentChapter.body}\n\n* * *\n\n${ex}`
-                : currentChapter.body;
-            })()
-          : storyAppendix.length > 0
-            ? `${fullText}\n\n* * *\n\n${storyAppendix}`
-            : fullText;
-
-      const appendContinuation = async (opts: { sectionTitle: string }) => {
-        try {
-          const continuation = await narrateStoryContinuation({
-            bookTitle: book.title,
-            bookAuthor: book.author,
-            storySoFarTail: baseDisplay.slice(-3200),
-            userMessage: text,
-            characterName: character.name,
-            characterReply: reply,
-            textLanguage: book.textLanguage,
-            chapterLabel: chapterMode && currentChapter ? currentChapter.label : undefined,
-          });
-          const block = `${opts.sectionTitle}\n\n${continuation}`;
-          if (chapterMode) {
-            setChapterExtras((prev) => {
-              const cur = prev[chapterIndex] ?? "";
-              const next = cur ? `${cur}\n\n${block}` : block;
-              return { ...prev, [chapterIndex]: next };
-            });
-          } else {
-            setStoryAppendix((prev) => (prev.length > 0 ? `${prev}\n\n${block}` : block));
-          }
-          requestAnimationFrame(() => {
-            const el = readRef.current;
-            if (el) el.scrollTop = el.scrollHeight;
-          });
-        } catch (contErr) {
-          console.warn("Falha ao estender a leitura:", contErr);
-          setError(
-            "Não foi possível acrescentar um trecho novo no texto agora. O que você conversou no chat foi mantido.",
-          );
-        }
-      };
-
-      if (book.readerContinuesStory && wantsStoryContinuation(text)) {
-        await appendContinuation({
-          sectionTitle: chapterMode ? "**Continuação deste capítulo**" : "**Continuação**",
-        });
-      }
     } catch (err) {
       console.warn("Falha no envio da mensagem:", err);
       setError(
@@ -407,58 +599,140 @@ export function App() {
     }
   }
 
+  function onSend(e: React.FormEvent) {
+    e.preventDefault();
+    void sendMessage(input);
+  }
+
   if (!book) {
+    const heroBook = featuredBooks.find((b) => b.demo && b.characters?.length);
+    const heroChar = heroBook?.characters?.[0];
     return (
-      <div className="app">
-        <header className="top">
-          <div className="brand">
-            <span className="kicker">Leitura que conversa com você</span>
-            <h1>
-              <span className="logo-text">Storyverse</span>
+      <div className="home">
+        <nav className="home-nav">
+          <span className="wordmark">
+            <span className="wordmark-mark" aria-hidden="true">
+              ✦
+            </span>
+            Storyverse
+          </span>
+          <span className="status" title="Mostra se o chat usa IA em tempo real ou respostas de demonstração.">
+            <span className="status-dot" aria-hidden="true" />
+            {providerLabel}
+          </span>
+        </nav>
+
+        <header className="hero">
+          <div className="hero-copy">
+            <span className="eyebrow">Leitura interativa</span>
+            <h1 className="hero-title">
+              Leia o livro.
+              <br />
+              <em>Converse com quem vive nele.</em>
             </h1>
-            <p>
-              Página à esquerda, voz à direita: você <strong>lê capítulo a capítulo</strong> (quando o arquivo
-              traz marcas como <strong>CAPÍTULO …</strong>) enquanto alguém da ficção{" "}
-              <strong>acompanha o seu ritmo</strong> no chat. Se quiser um deslize a mais na narrativa, peça
-              por escrito — por exemplo <strong>continua o capítulo</strong> — e o texto ganha um trecho
-              extra <strong>só quando você pedir</strong>. Neste site, o chat pode usar inteligência artificial
-              ou respostas de demonstração — o indicador ao lado resume o que está valendo agora.
+            <p className="hero-sub">
+              Enquanto você lê, os personagens acompanham o seu ritmo e respondem no chat — com a voz, o
+              tom e os segredos da própria história.
             </p>
+            <div className="hero-actions">
+              <a className="btn btn-primary btn-lg" href="#destaques">
+                Ver os destaques
+              </a>
+              <a className="btn btn-lg" href="#acervo">
+                Buscar no acervo
+              </a>
+            </div>
           </div>
-          <div className="pill" title="Mostra se o chat usa IA em tempo real ou respostas de demonstração.">
-            Chat: <strong>{providerLabel}</strong>
-          </div>
+
+          {heroBook?.demo && heroChar ? (
+            <button
+              type="button"
+              className="hero-demo"
+              onClick={() => startBook(heroBook)}
+              aria-label={`Abrir ${heroBook.title}`}
+            >
+              <div className="demo-page">
+                <span className="demo-chapter">{heroBook.demo.chapterLabel}</span>
+                <p>
+                  <span className="demo-dropcap">{heroBook.demo.pageOpening.charAt(0)}</span>
+                  {heroBook.demo.pageOpening.slice(1)}
+                </p>
+                <div className="demo-lines">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+              <div className="demo-chat">
+                <div className="demo-chat-head">
+                  <Avatar character={heroChar} size="sm" />
+                  <div>
+                    <strong>{heroChar.name}</strong>
+                    <small>{heroBook.title}</small>
+                  </div>
+                </div>
+                <div className="bubble user">{heroBook.demo.question}</div>
+                <div className="bubble assistant">{heroBook.demo.answer}</div>
+              </div>
+            </button>
+          ) : null}
         </header>
 
-        <section className="library">
-          <h2 className="library-title">Escolha onde sentar à mesa</h2>
-          <p className="library-note">
-            Cada cartão é uma mesa só sua: <strong>português</strong>, romance em arquivo local, e{" "}
-            <strong>personagens que reagem</strong> ao que você lê e escreve. Nada de trecho inventado no
-            livro sem o seu “sim” explícito — você manda no ritmo da história.
-          </p>
-          <div className="book-grid">
-            {ebooks.map((b) => (
-              <article key={b.id} className="book-card" style={{ background: b.cardGradient }}>
-                <div className="book-card-inner">
+        <section className="steps" aria-label="Como funciona">
+          <div className="step">
+            <span className="step-n">1</span>
+            <h3>Escolha uma história</h3>
+            <p>Clássicos de mistério, terror, romance e aventura — ou busque qualquer livro do acervo.</p>
+          </div>
+          <div className="step">
+            <span className="step-n">2</span>
+            <h3>Leia no seu ritmo</h3>
+            <p>Capítulo a capítulo, com modo noturno ou sépia e letra do tamanho que preferir.</p>
+          </div>
+          <div className="step">
+            <span className="step-n">3</span>
+            <h3>Converse com os personagens</h3>
+            <p>Pergunte, provoque, desabafe — eles sabem onde você parou e não dão spoiler.</p>
+          </div>
+        </section>
+
+        <section className="shelf" id="destaques">
+          <div className="shelf-head">
+            <h2>Em destaque</h2>
+            <p>Histórias com personagens prontos para conversar.</p>
+          </div>
+          <div className="shelf-grid">
+            {featuredBooks.map((b) => (
+              <article key={b.id} className="book">
+                <button
+                  type="button"
+                  className="book-cover-btn"
+                  onClick={() => startBook(b)}
+                  aria-label={`Abrir ${b.title}`}
+                >
+                  <BookCover book={b} />
+                </button>
+                <div className="book-info">
+                  <div className="book-tags">
+                    {b.genre ? <span className="genre-tag">{b.genre}</span> : null}
+                    <LangBadge book={b} />
+                  </div>
                   <h3>{b.title}</h3>
                   <p className="book-author">{b.author}</p>
-                  <p className="book-blurb">{b.blurb}</p>
+                  {b.blurb ? <p className="book-blurb">{b.blurb}</p> : null}
+                  {b.characters?.length ? (
+                    <div className="book-cast">
+                      <span className="avatar-stack">
+                        {b.characters.map((c) => (
+                          <Avatar key={c.id} character={c} size="sm" />
+                        ))}
+                      </span>
+                      <span>Converse com {listNames(b.characters.map(shortNameOf))}</span>
+                    </div>
+                  ) : null}
                   <div className="book-actions">
-                    {b.sourceUrl ? (
-                      <a
-                        className="source-link"
-                        href={b.sourceUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {b.sourceLabel} ↗
-                      </a>
-                    ) : (
-                      <span className="source-link source-link-static">{b.sourceLabel}</span>
-                    )}
                     <button type="button" className="btn btn-primary" onClick={() => startBook(b)}>
-                      Abrir esta leitura
+                      Começar a ler
                     </button>
                   </div>
                 </div>
@@ -466,204 +740,310 @@ export function App() {
             ))}
           </div>
         </section>
+
+        <Explore onOpen={startBook} />
+
+        <footer className="home-foot">
+          Storyverse · leitura que conversa com você · textos em domínio público do{" "}
+          <a href="https://www.gutenberg.org" target="_blank" rel="noreferrer">
+            Project Gutenberg
+          </a>
+        </footer>
       </div>
     );
   }
 
-  const charCount = displayedStory.length;
   const ready = loadState === "ready" && fullText.length > 0;
+  const castReady = cast !== null;
+  const userHasSpoken = messages.some((m) => m.role === "user");
+  const hasNextChapter = chapterIndex < chapters.length - 1;
 
   return (
-    <div className="app">
-      <header className="top">
-        <div className="brand brand--session">
-          <div className="reading-toolbar">
-            <button type="button" className="btn back-library" onClick={leaveBook}>
-              ← Biblioteca
-            </button>
-            <span className="reading-toolbar-divider" aria-hidden="true" />
-            <span className="kicker">Nesta sessão</span>
-          </div>
-          <h1 className="page-title">{book.title}</h1>
-          <p className="book-sub">{book.author}</p>
-          <p>
-            O texto à <strong>esquerda</strong> é o seu chão: rola no seu tempo. À{" "}
-            <strong>direita</strong>, alguém da história responde como se estivesse na mesma sala — tom da
-            obra, trecho em que você parou, e o que você escreve importa.
-            {book.chapterReading ? (
-              <>
-                {" "}
-                Neste modo, <strong>um capítulo por vez</strong>; o personagem pode mandar um sussurro no chat
-                conforme você avança ou troca de capítulo. Um trecho novo no livro <strong>só aparece</strong>{" "}
-                se você pedir (por exemplo <strong>continua o capítulo</strong> ou <strong>quero continuar</strong>)
-                depois da resposta dele.
-              </>
-            ) : null}
-            {book.readerContinuesStory && !book.chapterReading ? (
-              <>
-                {" "}
-                Nesta história, se escrever <strong>quero seguir</strong> ou <strong>continuar</strong>, o painel
-                da esquerda pode <strong>ganhar um novo trecho</strong> depois da fala do personagem.
-              </>
-            ) : null}
-          </p>
+    <div className={`reader theme-${prefs.theme}`}>
+      <header className="reader-bar">
+        <button type="button" className="icon-btn" onClick={leaveBook} aria-label="Voltar para a estante">
+          {Icon.back}
+        </button>
+        <div className="reader-title">
+          <strong>{book.title}</strong>
+          <span>
+            {book.author}
+            {currentChapter ? ` · ${currentChapter.label}` : ""}
+          </span>
         </div>
-        <div className="pill" title="Mostra se o chat usa IA em tempo real ou respostas de demonstração.">
-          Chat: <strong>{providerLabel}</strong>
+
+        {chapters.length > 1 ? (
+          <div className="chapter-nav">
+            <button
+              type="button"
+              className="icon-btn"
+              disabled={chapterIndex <= 0}
+              onClick={() => setChapterIndex((i) => Math.max(0, i - 1))}
+              aria-label="Capítulo anterior"
+            >
+              {Icon.back}
+            </button>
+            <select
+              className="chapter-select"
+              value={chapterIndex}
+              onChange={(e) => setChapterIndex(Number(e.target.value))}
+              aria-label="Escolher capítulo"
+            >
+              {chapters.map((ch, i) => (
+                <option key={ch.index} value={i}>
+                  {ch.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="icon-btn"
+              disabled={!hasNextChapter}
+              onClick={() => setChapterIndex((i) => Math.min(chapters.length - 1, i + 1))}
+              aria-label="Próximo capítulo"
+            >
+              {Icon.next}
+            </button>
+          </div>
+        ) : null}
+
+        <div className="reader-tools">
+          <button
+            type="button"
+            className="icon-btn text-btn"
+            disabled={prefs.fontStep <= 0}
+            onClick={() => setPrefs((p) => ({ ...p, fontStep: p.fontStep - 1 }))}
+            aria-label="Diminuir letra"
+          >
+            A<small>−</small>
+          </button>
+          <button
+            type="button"
+            className="icon-btn text-btn"
+            disabled={prefs.fontStep >= FONT_SIZES.length - 1}
+            onClick={() => setPrefs((p) => ({ ...p, fontStep: p.fontStep + 1 }))}
+            aria-label="Aumentar letra"
+          >
+            A<small>+</small>
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setPrefs((p) => ({ ...p, theme: p.theme === "night" ? "sepia" : "night" }))}
+            aria-label={prefs.theme === "night" ? "Mudar para modo sépia" : "Mudar para modo noturno"}
+          >
+            {prefs.theme === "night" ? Icon.sun : Icon.moon}
+          </button>
+        </div>
+
+        <div className="progress" aria-hidden="true">
+          <span style={{ width: `${readingProgressPct}%` }} />
         </div>
       </header>
 
-      <div className="layout">
-        <section className="panel panel-read">
-          <div className="panel-head">
-            <h2>{chapterMode ? "Capítulo" : "Leitura"}</h2>
-            <span className="pill">
-              {loadState === "loading"
-                ? "Carregando…"
-                : loadState === "error"
-                  ? "Erro"
-                  : ready
-                    ? `${chapterMode && chapters.length > 0 ? `${chapterIndex + 1}/${chapters.length} · ` : ""}${charCount.toLocaleString("pt-BR")} caracteres · ~${Math.round(readingProgressPct)}%`
-                    : "—"}
-            </span>
-          </div>
-
-          {chapterMode && chapters.length > 0 ? (
-            <div className="chapter-bar">
-              <button
-                type="button"
-                className="btn"
-                disabled={chapterIndex <= 0}
-                onClick={() => setChapterIndex((i) => Math.max(0, i - 1))}
-              >
-                ← Capítulo anterior
-              </button>
-              <span className="chapter-bar-title" title={currentChapter?.label}>
-                {currentChapter?.label ?? "—"}
-              </span>
-              <button
-                type="button"
-                className="btn"
-                disabled={chapterIndex >= chapters.length - 1}
-                onClick={() => setChapterIndex((i) => Math.min(chapters.length - 1, i + 1))}
-              >
-                Próximo capítulo →
-              </button>
-            </div>
-          ) : null}
-
+      <div className="reader-layout">
+        <main
+          ref={readRef}
+          className="page"
+          onScroll={onReadScroll}
+          style={{ "--read-size": `${FONT_SIZES[prefs.fontStep]}rem` } as React.CSSProperties}
+        >
           {loadState === "loading" ? (
-            <div className="read-status">Abrindo o livro — quase lá…</div>
+            <div className="page-status">
+              <span className="spinner" aria-hidden="true" />
+              Buscando o livro no acervo…
+            </div>
           ) : null}
 
           {loadState === "error" ? (
-            <div className="read-status read-status-err">
+            <div className="page-status page-status-err">
               <p>{loadError}</p>
-              {book.localStoryUrl != null ? (
-                <div className="err-actions">
-                  <button type="button" className="btn btn-primary" onClick={retryLoad}>
-                    Tentar de novo
-                  </button>
-                </div>
-              ) : null}
+              <button type="button" className="btn btn-primary" onClick={retryLoad}>
+                Tentar de novo
+              </button>
             </div>
           ) : null}
 
-          {loadState === "ready" ? (
-            <>
-              <div
-                ref={readRef}
-                className="read read-full"
-                onScroll={onReadScroll}
-                role="article"
-                aria-label={chapterMode ? "Texto do capítulo em leitura" : "Texto completo da obra"}
-              >
-                <pre className="full-book">{displayedStory}</pre>
-              </div>
-              <div className="nav-row">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => {
-                    readRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-                  }}
-                >
-                  {chapterMode ? "Voltar ao início deste capítulo" : "Voltar ao início do livro"}
-                </button>
-                {book.sourceUrl ? (
-                  <a className="btn" href={book.sourceUrl} target="_blank" rel="noreferrer">
-                    Ver obra no site do acervo ↗
-                  </a>
-                ) : null}
-              </div>
-            </>
-          ) : null}
-        </section>
+          {ready && currentChapter ? (
+            <article className="prose" aria-label="Texto do capítulo">
+              <header className="chapter-head">
+                <span>
+                  {chapterIndex + 1} de {chapters.length}
+                </span>
+                <h1>{currentChapter.label}</h1>
+                <span className="chapter-ornament" aria-hidden="true">
+                  ✦
+                </span>
+              </header>
 
-        <section className="panel panel-chat">
-          <div className="panel-head">
-            <h2>Personagens</h2>
-            <span className="pill">{character?.name}</span>
-          </div>
-          <div className="tabs" role="tablist">
-            {characters.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                role="tab"
-                className={`tab ${c.id === activeCharId ? "active" : ""}`}
-                onClick={() => setActiveCharId(c.id)}
-                style={c.id === activeCharId ? { borderBottomColor: c.color } : undefined}
-              >
-                {c.name}
-              </button>
-            ))}
-          </div>
-          {error ? <div className="err">{error}</div> : null}
-          {loading ? (
-            <div className="loading">O personagem está escolhendo as palavras…</div>
-          ) : null}
-          <div ref={chatBodyRef} className="chat-body">
-            {messages.map((m) => (
-              <div key={m.id} className={`bubble ${m.role}`}>
-                {m.role === "assistant" ? (
-                  <span className="who" style={{ color: character?.color }}>
-                    {character?.name}
-                  </span>
+              {blocks.map((b, i) =>
+                b.kind === "heading" ? (
+                  <h2 key={i}>{withItalics(b.text)}</h2>
                 ) : (
-                  <span className="who">Você</span>
+                  <p key={i} className={i === dropCapIndex ? "dropcap" : undefined}>
+                    {withItalics(b.text)}
+                  </p>
+                ),
+              )}
+
+              <footer className="chapter-end">
+                {hasNextChapter ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-lg"
+                    onClick={() => setChapterIndex((i) => i + 1)}
+                  >
+                    Próximo capítulo {Icon.next}
+                  </button>
+                ) : (
+                  <p className="the-end">Fim — mas a conversa continua ao lado.</p>
                 )}
-                {m.text}
+                <a
+                  className="source-link"
+                  href={`https://www.gutenberg.org/ebooks/${book.gutenbergId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Ver esta obra no Project Gutenberg ↗
+                </a>
+              </footer>
+            </article>
+          ) : null}
+        </main>
+
+        <aside className={`chat ${chatOpen ? "is-open" : ""}`} aria-label="Conversa com os personagens">
+          {character ? (
+            <div className="chat-head">
+              <Avatar character={character} size="lg" />
+              <div className="chat-head-text">
+                <strong>{character.name}</strong>
+                <span>{character.role}</span>
               </div>
-            ))}
+              <button
+                type="button"
+                className="icon-btn chat-close"
+                onClick={() => setChatOpen(false)}
+                aria-label="Fechar conversa"
+              >
+                {Icon.close}
+              </button>
+            </div>
+          ) : (
+            <div className="chat-head chat-head-pending">
+              <span className="spinner" aria-hidden="true" />
+              <div className="chat-head-text">
+                <strong>{ready ? "Conhecendo os personagens…" : "Abrindo o livro…"}</strong>
+                <span>Em instantes eles chegam para conversar</span>
+              </div>
+              <button
+                type="button"
+                className="icon-btn chat-close"
+                onClick={() => setChatOpen(false)}
+                aria-label="Fechar conversa"
+              >
+                {Icon.close}
+              </button>
+            </div>
+          )}
+
+          {characters.length > 1 ? (
+            <div className="cast" role="tablist" aria-label="Personagens">
+              {characters.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={c.id === character?.id}
+                  className={`cast-chip ${c.id === character?.id ? "active" : ""}`}
+                  style={{ "--c": c.color } as React.CSSProperties}
+                  onClick={() => setActiveCharId(c.id)}
+                >
+                  <Avatar character={c} size="sm" />
+                  {shortNameOf(c)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <div ref={chatBodyRef} className="chat-body">
+            {messages.map((m) =>
+              m.role === "assistant" && character ? (
+                <div key={m.id} className="msg msg-assistant">
+                  <Avatar character={character} size="sm" />
+                  <div className="bubble assistant">{m.text}</div>
+                </div>
+              ) : (
+                <div key={m.id} className="msg msg-user">
+                  <div className="bubble user">{m.text}</div>
+                </div>
+              ),
+            )}
+            {loading && character ? (
+              <div className="msg msg-assistant">
+                <Avatar character={character} size="sm" />
+                <div className="bubble assistant typing" aria-label={`${character.name} está escrevendo`}>
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            ) : null}
           </div>
-          <form className="chat-form" onSubmit={onSend}>
+
+          {error ? <div className="chat-err">{error}</div> : null}
+
+          {!userHasSpoken && character && ready && !loading ? (
+            <div className="suggestions">
+              {suggestionsFor(character).map((s) => (
+                <button key={s} type="button" className="suggestion" onClick={() => void sendMessage(s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <form className="composer" onSubmit={onSend}>
             <textarea
-              rows={2}
+              ref={inputRef}
+              rows={1}
+              maxLength={USER_MESSAGE_MAX_CHARS}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder={
-                ready && character
-                  ? `Escreva para ${character.name}…`
-                  : "Aguarde o livro abrir…"
+                ready && character ? `Escreva para ${shortNameOf(character)}…` : "Aguarde um instante…"
               }
-              disabled={loading || !ready || !character}
+              disabled={loading || !ready || !castReady || !character}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  void onSend(e);
+                  void sendMessage(input);
                 }
               }}
             />
             <button
               type="submit"
-              className="btn btn-primary"
-              disabled={loading || !ready || !input.trim()}
+              className="send-btn"
+              disabled={loading || !ready || !character || !input.trim()}
+              aria-label="Enviar"
             >
-              Enviar
+              {Icon.send}
             </button>
           </form>
-        </section>
+        </aside>
+
+        {!chatOpen ? (
+          <button
+            type="button"
+            className="chat-fab"
+            onClick={() => {
+              setChatOpen(true);
+              requestAnimationFrame(() => inputRef.current?.focus());
+            }}
+          >
+            {character ? <Avatar character={character} size="sm" /> : null}
+            {character ? `Conversar com ${shortNameOf(character)}` : "Conversar"}
+          </button>
+        ) : null}
       </div>
     </div>
   );

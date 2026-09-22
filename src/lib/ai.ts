@@ -2,80 +2,25 @@ import type { StoryCharacter } from "../data/types";
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
-/** Tom inferido da última mensagem do leitor, para orientar a ramificação narrativa. */
-export type ReaderStoryBranch =
-  | "confiança e aliança"
-  | "ceticismo e distância"
-  | "paixão e risco"
-  | "desafio e conflito"
-  | "calma e observação";
-
-const READER_BRANCH_LABELS: ReaderStoryBranch[] = [
-  "confiança e aliança",
-  "ceticismo e distância",
-  "paixão e risco",
-  "desafio e conflito",
-  "calma e observação",
-];
-
-export function classifyReaderStoryBranchHeuristic(userMessage: string): ReaderStoryBranch {
-  const t = userMessage.trim().toLowerCase();
-  if (!t) return "calma e observação";
-  if (
-    /amo|risco|beij|corre|fugi|sentimento|paix(ão|ao)|desej|fogo|corpo|noite/.test(t) ||
-    (t.includes("quero") && (t.includes("você") || t.includes("voce")))
-  ) {
-    return "paixão e risco";
-  }
-  if (/não confio|nao confio|mentir|engan|prova|duvid|desconfi|cetic|fing/.test(t)) {
-    return "ceticismo e distância";
-  }
-  if (/odeio|mata|revolt|desafi|nunca|exijo|ameaç|ameac|infern|diab/.test(t)) {
-    return "desafio e conflito";
-  }
-  if (/sim\b|junto|aliad|proteg|ajud|fico contigo|estou contigo|acredito|vamos/.test(t)) {
-    return "confiança e aliança";
-  }
-  return "calma e observação";
-}
-
-function normalizeBranchLabel(raw: string): ReaderStoryBranch | null {
-  const s = raw.trim().toLowerCase();
-  for (const label of READER_BRANCH_LABELS) {
-    if (s === label.toLowerCase()) return label;
-  }
-  return null;
-}
-
-/** Com IA (se houver chave), senão heurística em português. */
-export async function classifyReaderStoryBranch(userMessage: string): Promise<ReaderStoryBranch> {
-  const fallback = classifyReaderStoryBranchHeuristic(userMessage);
-  if (detectProvider() === "mock") return fallback;
-
-  const system = [
-    "Você classifica UMA única etiqueta em português para o tom da mensagem do leitor.",
-    `Etiquetas permitidas (responda só com o texto exato de uma delas, sem aspas nem pontuação extra):`,
-    READER_BRANCH_LABELS.map((l) => `- ${l}`).join("\n"),
-  ].join("\n");
-
-  try {
-    const out = await callLlmWith429Fallback(
-      system,
-      [{ role: "user", content: userMessage.slice(0, 800) }],
-      { groqMaxTokens: 40, geminiMaxOutput: 32 },
-    );
-    const cleaned =
-      normalizeBranchLabel(out) ?? normalizeBranchLabel((out.split("\n")[0] ?? "").trim());
-    return cleaned ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
+/** Quantas mensagens anteriores vão para a IA (o custo por mensagem fica constante). */
+const HISTORY_WINDOW = 10;
+/** Mensagens antigas muito longas são cortadas antes de ir no histórico. */
+const HISTORY_MSG_MAX_CHARS = 600;
+/** Tamanho máximo do trecho do livro enviado junto com cada mensagem. */
+const EXCERPT_MAX_CHARS = 2000;
+/** Limite de tokens da resposta do personagem (falas de chat são curtas). */
+const REPLY_MAX_TOKENS = 250;
+/** Tamanho máximo da mensagem do leitor (também aplicado no textarea). */
+export const USER_MESSAGE_MAX_CHARS = 500;
+/** Folga extra para modelos que raciocinam antes de responder (gpt-oss, qwen3). */
+const REASONING_MAX_TOKENS = 200;
+/** Tempo que um modelo fica "de castigo" depois de responder 429, quando a API não diz. */
+const DEFAULT_COOLDOWN_MS = 60_000;
 
 function mockReply(_character: StoryCharacter, userText: string): string {
   const t = userText.trim().toLowerCase();
   if (!t) {
-    return "Estou aqui — diga o que quer saber ou mudar.";
+    return "Estou aqui — diga o que quer saber.";
   }
   if (t.includes("medo") || t.includes("assust") || t.includes("fear")) {
     return "Respira. O medo aqui é barulho — o perigo é silêncio demais.";
@@ -89,77 +34,88 @@ function mockReply(_character: StoryCharacter, userText: string): string {
   return "Entendi. Não sei se isso muda tudo… mas muda como eu te olho daqui pra frente.";
 }
 
-function httpErrorMessage(
-  provedor: "Groq" | "Gemini",
-  status: number,
-  modelOrHint: string,
-  corpo: string,
-): Error {
-  const trecho = corpo.slice(0, 280);
-  console.warn(`[${provedor}] HTTP ${status} (${modelOrHint}):`, trecho);
-  if (status === 429) {
-    return new Error(
-      "O serviço de inteligência artificial está no limite de uso no momento. Aguarde um pouco e tente de novo.",
-    );
+class LlmHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfterMs: number | null,
+    message: string,
+  ) {
+    super(message);
   }
-  if (status === 401 || status === 403) {
-    return new Error("Não foi possível acessar o serviço de inteligência artificial.");
-  }
-  return new Error("Não foi possível gerar a resposta agora. Tente de novo em instantes.");
 }
 
-async function groqComplete(
+function retryAfterMs(res: Response): number | null {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return null;
+  const secs = Number(raw);
+  return Number.isFinite(secs) && secs > 0 ? secs * 1000 : null;
+}
+
+async function toHttpError(label: string, res: Response): Promise<LlmHttpError> {
+  const corpo = await res.text().catch(() => "");
+  console.warn(`[${label}] HTTP ${res.status}:`, corpo.slice(0, 280));
+  return new LlmHttpError(res.status, retryAfterMs(res), `${label} HTTP ${res.status}`);
+}
+
+/** Groq e OpenRouter usam o mesmo formato de API (compatível com OpenAI). */
+async function openAiCompatibleComplete(
+  label: string,
+  endpoint: string,
   apiKey: string,
+  model: string,
   system: string,
   messages: ChatTurn[],
-  maxTokens = 400,
+  maxTokens: number,
 ): Promise<string> {
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  // Modelos que "pensam" antes de responder: pede raciocínio curto e deixa folga de tokens
+  // para ele, senão a resposta sai vazia ou cortada.
+  const reasoning: Record<string, unknown> = model.includes("gpt-oss")
+    ? { reasoning_effort: "low" }
+    : model.includes("qwen3")
+      ? { reasoning_format: "hidden" }
+      : {};
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "llama-3.1-8b-instant",
+      model,
       messages: [{ role: "system", content: system }, ...messages],
       temperature: 0.85,
-      max_tokens: maxTokens,
+      max_tokens: Object.keys(reasoning).length > 0 ? maxTokens + REASONING_MAX_TOKENS : maxTokens,
+      ...(endpoint.includes("groq.com") ? reasoning : {}),
     }),
   });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw httpErrorMessage("Groq", res.status, "llama-3.1-8b-instant", errText);
-  }
+  if (!res.ok) throw await toHttpError(label, res);
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
   };
   const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error("A resposta da IA veio vazia. Tente de novo.");
+  if (!text) throw new Error(`${label}: resposta vazia`);
   return text;
 }
 
-function geminiModelId(): string {
-  const raw = import.meta.env.VITE_GEMINI_MODEL?.trim();
-  // gemini-1.5-flash deixou de existir nesse endpoint para muitas chaves do AI Studio (404).
-  return raw || "gemini-2.0-flash";
-}
-
 async function geminiComplete(
+  label: string,
   apiKey: string,
+  model: string,
   system: string,
   messages: ChatTurn[],
-  maxOutputTokens = 512,
+  maxTokens: number,
 ): Promise<string> {
   const contents = messages.map((m) => ({
     role: m.role === "user" ? "user" : "model",
     parts: [{ text: m.content }],
   }));
-  const model = geminiModelId();
   const url = new URL(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
   );
   url.searchParams.set("key", apiKey);
+
+  // Prefira os modelos "lite": os maiores gastam os tokens de saída pensando e cortam a resposta.
+  const generationConfig = { temperature: 0.9, maxOutputTokens: maxTokens };
 
   const res = await fetch(url.toString(), {
     method: "POST",
@@ -167,81 +123,163 @@ async function geminiComplete(
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
       contents,
-      generationConfig: { temperature: 0.9, maxOutputTokens },
+      generationConfig,
     }),
   });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw httpErrorMessage("Gemini", res.status, model, errText);
-  }
+  if (!res.ok) throw await toHttpError(label, res);
   const data = (await res.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
   };
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("")?.trim();
-  if (!text) throw new Error("A resposta da IA veio vazia. Tente de novo.");
+  if (!text) throw new Error(`${label}: resposta vazia`);
   return text;
 }
 
-export function detectProvider(): "groq" | "gemini" | "mock" {
-  if (import.meta.env.VITE_GROQ_API_KEY?.trim()) return "groq";
-  if (import.meta.env.VITE_GEMINI_API_KEY?.trim()) return "gemini";
-  return "mock";
+type Provider = {
+  /** Identificador único (provedor + modelo), usado no controle de cota. */
+  id: string;
+  run: (system: string, messages: ChatTurn[], maxTokens: number) => Promise<string>;
+};
+
+function modelList(raw: string | undefined, fallback: string[]): string[] {
+  const list = (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return list.length > 0 ? list : fallback;
 }
 
-function hasGroqKey(): boolean {
-  return Boolean(import.meta.env.VITE_GROQ_API_KEY?.trim());
+/**
+ * Cadeia de reservas: cada modelo de cada provedor tem cota própria no plano gratuito,
+ * então tentar vários em sequência soma as cotas.
+ */
+function buildProviderChain(): Provider[] {
+  const env = import.meta.env;
+  const chain: Provider[] = [];
+
+  const groqKey = env.VITE_GROQ_API_KEY?.trim();
+  if (groqKey) {
+    for (const model of modelList(env.VITE_GROQ_MODELS, [
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+    ])) {
+      const id = `groq:${model}`;
+      chain.push({
+        id,
+        run: (s, m, t) =>
+          openAiCompatibleComplete(
+            id,
+            "https://api.groq.com/openai/v1/chat/completions",
+            groqKey,
+            model,
+            s,
+            m,
+            t,
+          ),
+      });
+    }
+  }
+
+  const geminiKey = env.VITE_GEMINI_API_KEY?.trim();
+  if (geminiKey) {
+    // O Google aposenta modelos com frequência; "*-latest" sempre aponta para o atual.
+    for (const model of modelList(env.VITE_GEMINI_MODEL, [
+      "gemini-3.5-flash-lite",
+      "gemini-flash-lite-latest",
+    ])) {
+      const id = `gemini:${model}`;
+      chain.push({ id, run: (s, m, t) => geminiComplete(id, geminiKey, model, s, m, t) });
+    }
+  }
+
+  const openRouterKey = env.VITE_OPENROUTER_API_KEY?.trim();
+  if (openRouterKey) {
+    for (const model of modelList(env.VITE_OPENROUTER_MODELS, [
+      "meta-llama/llama-3.3-70b-instruct:free",
+    ])) {
+      const id = `openrouter:${model}`;
+      chain.push({
+        id,
+        run: (s, m, t) =>
+          openAiCompatibleComplete(
+            id,
+            "https://openrouter.ai/api/v1/chat/completions",
+            openRouterKey,
+            model,
+            s,
+            m,
+            t,
+          ),
+      });
+    }
+  }
+
+  return chain;
 }
 
-function hasGeminiKey(): boolean {
-  return Boolean(import.meta.env.VITE_GEMINI_API_KEY?.trim());
+const providerChain = buildProviderChain();
+
+/** Até quando (timestamp) cada modelo deve ser pulado por ter estourado a cota. */
+const cooldownUntil = new Map<string, number>();
+
+export function detectProvider(): "live" | "mock" {
+  return providerChain.length > 0 ? "live" : "mock";
 }
 
 /** Texto curto para o pill da UI (linguagem para quem lê, não para quem desenvolve). */
 export function providerDisplayLabel(): string {
-  const g = hasGroqKey();
-  const m = hasGeminiKey();
-  if (g && m) return "IA ativa (com serviço reserva)";
-  if (g || m) return "IA ativa";
+  if (providerChain.length > 1) return "IA ativa (com serviço reserva)";
+  if (providerChain.length === 1) return "IA ativa";
   return "Modo demonstração";
 }
 
-function is429Error(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return err.message.includes("429") || err.message.includes("limite de uso");
-}
-
-type LlmCallOpts = { groqMaxTokens?: number; geminiMaxOutput?: number };
-
-async function callLlmWith429Fallback(
+async function callLlmWithFallback(
   system: string,
   messages: ChatTurn[],
-  opts?: LlmCallOpts,
+  maxTokens = REPLY_MAX_TOKENS,
 ): Promise<string> {
-  const groqKey = import.meta.env.VITE_GROQ_API_KEY?.trim();
-  const geminiKey = import.meta.env.VITE_GEMINI_API_KEY?.trim();
-  const gMax = opts?.groqMaxTokens ?? 400;
-  const mMax = opts?.geminiMaxOutput ?? 512;
-
-  const chain: Array<{ id: string; run: () => Promise<string> }> = [];
-  if (groqKey) chain.push({ id: "groq", run: () => groqComplete(groqKey, system, messages, gMax) });
-  if (geminiKey)
-    chain.push({ id: "gemini", run: () => geminiComplete(geminiKey, system, messages, mMax) });
-
-  if (chain.length === 0) {
+  if (providerChain.length === 0) {
     throw new Error("Nenhum serviço de IA está configurado neste ambiente.");
   }
 
-  let lastErr: unknown;
-  for (let i = 0; i < chain.length; i++) {
+  const now = Date.now();
+  const available = providerChain.filter((p) => (cooldownUntil.get(p.id) ?? 0) <= now);
+  // Se todos estão em espera, tenta mesmo assim: a cota pode já ter voltado.
+  const order = available.length > 0 ? available : providerChain;
+
+  let sawRateLimit = false;
+  for (const p of order) {
     try {
-      return await chain[i].run();
+      const text = await p.run(system, messages, maxTokens);
+      cooldownUntil.delete(p.id);
+      return text;
     } catch (e) {
-      lastErr = e;
-      const canTryNext = is429Error(e) && i < chain.length - 1;
-      if (!canTryNext) throw e;
+      // Qualquer falha (cota, modelo removido, chave inválida, rede) passa para o próximo.
+      if (e instanceof LlmHttpError && e.status === 429) {
+        sawRateLimit = true;
+        cooldownUntil.set(p.id, Date.now() + (e.retryAfterMs ?? DEFAULT_COOLDOWN_MS));
+      }
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+
+  throw new Error(
+    sawRateLimit
+      ? "O serviço de inteligência artificial está no limite de uso no momento. Aguarde um pouco e tente de novo."
+      : "Não foi possível gerar a resposta agora. Tente de novo em instantes.",
+  );
+}
+
+function trimHistory(history: ChatTurn[]): ChatTurn[] {
+  const recent = history.slice(-HISTORY_WINDOW).map((m) => ({
+    role: m.role,
+    content:
+      m.content.length > HISTORY_MSG_MAX_CHARS
+        ? `${m.content.slice(0, HISTORY_MSG_MAX_CHARS)}…`
+        : m.content,
+  }));
+  // Gemini exige que a conversa comece pelo usuário.
+  while (recent.length > 0 && recent[0].role !== "user") recent.shift();
+  return recent;
 }
 
 export async function characterReply(params: {
@@ -267,134 +305,105 @@ export async function characterReply(params: {
     readingProgressPct,
     textLanguage,
   } = params;
-  const provider = detectProvider();
 
-  const langNote =
-    textLanguage === "en"
-      ? "O leitor está lendo o texto original em inglês na tela. Trecho próximo da posição atual (pode começar/terminar com reticências):"
-      : "O leitor está lendo o texto em português na tela. Trecho próximo da posição atual:";
-
-  const obra =
-    ebookTitle && ebookAuthor
-      ? `Obra: "${ebookTitle}" (${ebookAuthor}). Mantenha fidelidade ao espírito do personagem.`
-      : ebookTitle
-        ? `História: "${ebookTitle}".`
-        : null;
-
-  const storyContext = [
-    `Posição aproximada de leitura: ${Math.round(readingProgressPct)}% do livro.`,
-    langNote,
-    textExcerpt.slice(0, 4500),
-  ].join("\n");
-
-  const system = [
-    `Você é ${character.name}, ${character.role} em uma experiência de leitura interativa do livro acima.`,
-    ...(obra ? [obra] : []),
-    character.systemHint,
-    "O leitor vê o texto integral na interface; não resuma o livro inteiro. Responda à mensagem do leitor como o personagem.",
-    "Não invente fatos enormes que contradigam grosseiramente a obra; se o leitor pedir fanfiction, deixe claro que é brincadeira ou ramificação imaginada.",
-    storyContext,
-  ].join("\n");
-
-  const messages: ChatTurn[] = [...history, { role: "user", content: userMessage }];
-
-  if (provider === "mock") {
+  if (detectProvider() === "mock") {
     await new Promise((r) => setTimeout(r, 350 + Math.random() * 400));
     return mockReply(character, userMessage);
   }
 
-  return callLlmWith429Fallback(system, messages);
-}
+  const langNote =
+    textLanguage === "en"
+      ? "O leitor lê o original em inglês. Trecho perto da posição atual:"
+      : "Trecho perto da posição atual de leitura:";
 
-/** Frases curtas do leitor que pedem avanço da cena no painel de leitura. */
-export function wantsStoryContinuation(userMessage: string): boolean {
-  const t = userMessage.trim().toLowerCase();
-  if (t.length > 160) return false;
-  const checks = [
-    /\b(quero\s+)?(seguir|continuar|continua|prosseguir|avançar|avancar)\b/,
-    /\bcontinua(r)?\s+(a\s+)?hist(o|ó)ria\b/,
-    /\bcontinua(r)?\s+(o\s+)?cap[ií]tulo\b/,
-    /\b(adiciona|acrescenta|inventa)\s+(algo\s+)?(no\s+)?cap[ií]tulo\b/,
-    /\b(vamos|vamo)\s+(seguir|adiante|em\s+frente)\b/,
-    /\b(ir\s+)?em\s+frente\b/,
-    /^(seguir|continuar|prosseguir)\s*[!?.…]*$/i,
+  const obra =
+    ebookTitle && ebookAuthor
+      ? `Obra: "${ebookTitle}" (${ebookAuthor}).`
+      : ebookTitle
+        ? `Obra: "${ebookTitle}".`
+        : null;
+
+  // Partes fixas primeiro e o trecho variável no fim.
+  const system = [
+    `Você é ${character.name}, ${character.role}, conversando com um leitor durante a leitura.`,
+    ...(obra ? [obra] : []),
+    character.systemHint,
+    "Responda como o personagem, de forma breve. Não resuma o livro nem narre cenas novas; seja fiel à obra.",
+    "Não revele acontecimentos que vêm depois do trecho em que o leitor está (sem spoilers).",
+    `Posição de leitura: ~${Math.round(readingProgressPct)}% do livro.`,
+    langNote,
+    textExcerpt.slice(0, EXCERPT_MAX_CHARS),
+  ].join("\n");
+
+  const messages: ChatTurn[] = [
+    ...trimHistory(history),
+    { role: "user", content: userMessage.slice(0, USER_MESSAGE_MAX_CHARS) },
   ];
-  return checks.some((re) => re.test(t));
+
+  return callLlmWithFallback(system, messages);
 }
 
-/** Gera trecho narrativo em terceira pessoa para anexar ao livro (painel esquerdo). */
-export async function narrateStoryContinuation(params: {
-  bookTitle: string;
-  bookAuthor: string;
-  storySoFarTail: string;
-  userMessage: string;
-  characterName: string;
-  characterReply: string;
-  textLanguage: "pt" | "en";
-  /** Quando definido, a continuação inclina-se a esse tom (ramificação interativa). */
-  readerBranch?: ReaderStoryBranch;
-  /** Se o leitor pediu extensão só de um capítulo, restringe o desdobramento a esse bloco. */
-  chapterLabel?: string;
-}): Promise<string> {
-  const provider = detectProvider();
-  const lang =
-    params.textLanguage === "en"
-      ? "English, third person, literary tone matching the excerpt."
-      : "português do Brasil, terceira pessoa, tom literário coerente com o trecho.";
+const CAST_COLORS = ["#c9a88c", "#9eb8c9", "#c49ab8", "#9cb9a8", "#c4b07a"];
 
-  const branchNote = params.readerBranch
-    ? `Esta passagem é uma ramificação: o leitor empurrou o enredo na direção de "${params.readerBranch}". Deixe essa tonalidade moldar o que acontece a seguir, sem negar o texto já lido — é um desdobramento possível, como se o leitor estivesse na sala com os personagens.`
-    : "";
+/** Personagem neutro usado quando a IA não está disponível ou falha ao sugerir o elenco. */
+export function narratorCharacter(title: string): StoryCharacter {
+  return {
+    id: "narrador",
+    name: "Narrador",
+    role: "A voz que conta esta história",
+    color: CAST_COLORS[0],
+    systemHint: `Você é o narrador de "${title}": conhece a obra por dentro, comenta personagens e cenas com tom literário, sem spoilers. Responda em português do Brasil, 2–4 frases.`,
+  };
+}
 
-  const chapterNote = params.chapterLabel
-    ? `O leitor pediu material extra só no âmbito do trecho "${params.chapterLabel}". Escreva uma continuação que encaixe logo após o final desse capítulo/trecho (não salte para capítulos posteriores da obra).`
-    : "";
+/**
+ * Pede à IA os personagens principais de um livro que não tem elenco escrito à mão.
+ * Chamada uma única vez por livro (o resultado fica guardado no navegador).
+ */
+export async function suggestBookCharacters(params: {
+  title: string;
+  author: string;
+  /** Início do livro, para obras que o modelo talvez não conheça. */
+  opening: string;
+}): Promise<StoryCharacter[]> {
+  if (detectProvider() === "mock") return [narratorCharacter(params.title)];
 
   const system = [
-    `Você é o narrador onisciente de "${params.bookTitle}" (${params.bookAuthor}).`,
-    `Escreva APENAS a continuação da história em ${lang}`,
-    "2 a 5 parágrafos curtos. Sem título. Sem prefixos como \"Narrador:\". Sem lista numerada.",
-    `Não repita o trecho fornecido; avance a cena. Incorpore o clima da fala do leitor e o que ${params.characterName} acabou de responder.`,
-    branchNote,
-    chapterNote,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    "Você escolhe personagens de livros para um app onde leitores conversam com eles.",
+    "Responda APENAS com um array JSON, sem texto antes ou depois, no formato:",
+    '[{"name":"Nome completo","shortName":"Nome curto","role":"papel na história em até 6 palavras","personality":"personalidade e jeito de falar em 1–2 frases"}]',
+    "Escolha de 2 a 3 personagens principais que existem de verdade na obra. Campos role e personality em português do Brasil.",
+  ].join("\n");
 
-  const userPayload = [
-    "--- Final recente da história (contexto) ---",
-    params.storySoFarTail.slice(-2800),
-    "--- Fala do leitor ---",
-    params.userMessage,
-    `--- Resposta recente de ${params.characterName} ---`,
-    params.characterReply,
-  ].join("\n\n");
+  const user = [
+    `Livro: "${params.title}" — ${params.author}.`,
+    "Início do texto:",
+    params.opening.slice(0, 1500),
+  ].join("\n");
 
-  const messages: ChatTurn[] = [{ role: "user", content: userPayload }];
-
-  if (provider === "mock") {
-    await new Promise((r) => setTimeout(r, 450));
-    const b = params.readerBranch ?? "calma e observação";
-    if (params.textLanguage === "pt") {
-      const lines: Record<ReaderStoryBranch, string> = {
-        "confiança e aliança":
-          "Algo se afrouxa no ar — não é trégua completa, mas um acordo tácito. Os passos encontram ritmo comum; até o silêncio parece combinado. O que vem à frente ainda guarda espinhos, porém agora há duas sombras caminhando na mesma direção.",
-        "ceticismo e distância":
-          "Cada gesto passa a ser medido duas vezes. O olhar demora um instante a mais nas mãos, nas fechaduras, nas palavras ditas com doçura demais. A cena não explode; ela esfria, e nesse frio nascem perguntas que ninguém quer nomear em voz alta.",
-        "paixão e risco":
-          "O pulso dispara onde a etiqueta manda calar. Um detalhe insignificante — um olhar um segundo longo demais — vira faísca. O risco não anuncia chegada com trombetas; ele se senta perto, quente, como se já fosse tarde para recuar sem pagar preço.",
-        "desafio e conflito":
-          "As palavras deixam de ser véu. O que era insinuação vira linha na areia: alguém avança, alguém recua com a espinha eriçada. O ambiente estreita; até o mobiliário parece encostar nas costas, empurrando a cena para o confronto que estava adiado.",
-        "calma e observação":
-          "O tempo da sala desacelera. Ninguém precisa gritar para que o peso se note: é na ordem das xícaras, na poeira no raio de sol, no jeito de segurar a saia ou a luva. Nesse ritmo, os detalhes falam alto — e a história escuta antes de decidir o próximo passo.",
-      };
-      return lines[b];
-    }
-    return "The moment tilts—not toward noise, but toward consequence. What follows refuses a tidy name; it insists, step by step, on becoming inevitable.";
+  try {
+    const out = await callLlmWithFallback(system, [{ role: "user", content: user }], 500);
+    const json = out.slice(out.indexOf("["), out.lastIndexOf("]") + 1);
+    const list = JSON.parse(json) as {
+      name?: string;
+      shortName?: string;
+      role?: string;
+      personality?: string;
+    }[];
+    const cast = list
+      .filter((c) => c.name && c.personality)
+      .slice(0, 3)
+      .map((c, i) => ({
+        id: `ia-${i}`,
+        name: c.name!.trim(),
+        shortName: c.shortName?.trim() || undefined,
+        role: c.role?.trim() || "Personagem da história",
+        color: CAST_COLORS[i % CAST_COLORS.length],
+        systemHint: `Você é ${c.name} em "${params.title}". ${c.personality} Responda em português do Brasil, em primeira pessoa, 2–4 frases.`,
+      }));
+    return cast.length > 0 ? cast : [narratorCharacter(params.title)];
+  } catch (e) {
+    console.warn("Falha ao sugerir personagens:", e);
+    return [narratorCharacter(params.title)];
   }
-
-  return callLlmWith429Fallback(system, messages, {
-    groqMaxTokens: 720,
-    geminiMaxOutput: 768,
-  });
 }
