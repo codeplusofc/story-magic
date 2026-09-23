@@ -35,4 +35,6 @@ export type Ebook = {
   /** Personagens escritos à mão. Sem eles, a IA sugere os personagens ao abrir o livro. */
   characters?: StoryCharacter[];
   demo?: HeroDemo;
+  /** Seção da estante em destaque. */
+  shelf?: "pt" | "terror" | "classicos";
 };

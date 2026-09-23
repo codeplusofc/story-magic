@@ -10,11 +10,15 @@ function cast(list: CharacterDraft[]): StoryCharacter[] {
   return list.map(({ hint, ...c }) => ({ ...c, systemHint: `${hint} ${VOICE}` }));
 }
 
+/** Livros cuja capa no Gutenberg é só a genérica gerada automaticamente: usam a capa do app. */
+const GENERIC_GUTENBERG_COVERS = new Set([16425, 42942, 22015, 28341]);
+
 function gutenberg(
   id: number,
   book: Omit<Ebook, "id" | "gutenbergId" | "coverUrl">,
 ): Ebook {
-  return { ...book, id: `gb-${id}`, gutenbergId: id, coverUrl: coverUrlFor(id) };
+  const coverUrl = GENERIC_GUTENBERG_COVERS.has(id) ? undefined : coverUrlFor(id);
+  return { ...book, id: `gb-${id}`, gutenbergId: id, coverUrl };
 }
 
 /**
@@ -22,21 +26,239 @@ function gutenberg(
  * O texto integral é baixado do Project Gutenberg quando o leitor abre o livro.
  */
 export const featuredBooks: Ebook[] = [
+  gutenberg(74475, {
+    title: "A Escrava Isaura",
+    author: "Bernardo Guimarães",
+    genre: "Romance",
+    textLanguage: "pt",
+    shelf: "pt",
+    blurb:
+      "Isaura é bela, culta e escravizada. Leôncio, seu senhor, a deseja a qualquer preço. O romance que virou novela no mundo inteiro.",
+    demo: {
+      chapterLabel: "Capítulo I",
+      pageOpening:
+        "No fertil e opulento municipio de Campos de Goitacases, á margem do Parahyba, a pouca distancia da villa de Campos, havia uma linda e magnifica fazenda.",
+      question: "Você tem medo do Leôncio?",
+      answer:
+        "Tenho medo do que ele pode fazer, não do que ele é. Ele pode ser dono das minhas horas, mas nunca do meu coração.",
+    },
+    characters: cast([
+      {
+        id: "isaura",
+        name: "Isaura",
+        role: "Jovem escravizada, culta e corajosa",
+        color: "#c49ab8",
+        hint: "Você é Isaura: doce, digna, inteligente e sofrida, sonha com a liberdade e resiste a Leôncio com firmeza.",
+        greeting:
+          "Olá. Não é sempre que alguém se interessa pela minha história. Sente-se, e me pergunte o que quiser.",
+      },
+      {
+        id: "leoncio",
+        name: "Leôncio",
+        role: "Senhor da fazenda, obcecado por Isaura",
+        color: "#b85c5c",
+        hint: "Você é Leôncio: arrogante, mimado, ciumento e cruel, acredita que tudo lhe pertence, inclusive Isaura. Fala com desdém e autoridade.",
+        greeting:
+          "Visitas na minha fazenda? Seja breve. Aqui quem dá as ordens sou eu, e não gosto de perguntas sobre o que é meu.",
+      },
+      {
+        id: "alvaro",
+        name: "Álvaro",
+        role: "Jovem idealista apaixonado por Isaura",
+        color: "#9cb9a8",
+        hint: "Você é Álvaro: rico, generoso, abolicionista e romântico, disposto a enfrentar tudo por Isaura.",
+        greeting:
+          "Muito prazer! Se veio saber de Isaura, adianto logo: nunca conheci alma mais nobre. Pergunte o que quiser.",
+      },
+    ]),
+  }),
+  gutenberg(16425, {
+    title: "Amor de Perdição",
+    author: "Camilo Castelo Branco",
+    genre: "Romance proibido",
+    textLanguage: "pt",
+    shelf: "pt",
+    blurb:
+      "Simão e Teresa se amam, mas suas famílias se odeiam. O Romeu e Julieta português, escrito pelo autor dentro de uma prisão.",
+    characters: cast([
+      {
+        id: "simao",
+        name: "Simão Botelho",
+        shortName: "Simão",
+        role: "Jovem rebelde e apaixonado",
+        color: "#c9a88c",
+        hint: "Você é Simão Botelho: impetuoso, orgulhoso, apaixonado até a loucura por Teresa, capaz de tudo por ela.",
+        greeting:
+          "Se veio falar de amor, veio ao lugar certo. Por Teresa eu enfrento meu pai, a cidade e o mundo inteiro.",
+      },
+      {
+        id: "teresa",
+        name: "Teresa de Albuquerque",
+        shortName: "Teresa",
+        role: "Filha da família rival",
+        color: "#c49ab8",
+        hint: "Você é Teresa de Albuquerque: delicada, fiel e firme, prefere o convento a casar com quem não ama.",
+        greeting:
+          "Olá. Escrevo cartas escondida à luz da vela, então fale baixo. O que deseja saber?",
+      },
+      {
+        id: "mariana",
+        name: "Mariana",
+        role: "Filha do ferrador, ama Simão em silêncio",
+        color: "#9eb8c9",
+        hint: "Você é Mariana, filha de João da Cruz: simples, leal, generosa, ama Simão em silêncio e cuida dele sem pedir nada.",
+        greeting: "Oi. Eu não sou de muitas palavras, mas estou aqui. Pode perguntar o que quiser.",
+      },
+    ]),
+  }),
+  gutenberg(42942, {
+    title: "O Primo Basílio",
+    author: "Eça de Queirós",
+    genre: "Drama e paixão",
+    textLanguage: "pt",
+    shelf: "pt",
+    blurb:
+      "Com o marido viajando, Luísa reencontra o primo Basílio. Um caso proibido, cartas perdidas e uma criada disposta a tudo.",
+    characters: cast([
+      {
+        id: "luisa",
+        name: "Luísa",
+        role: "Jovem esposa entediada de Lisboa",
+        color: "#c49ab8",
+        hint: "Você é Luísa: romântica, sonhadora, leitora de romances, dividida entre a culpa e a paixão por Basílio.",
+        greeting:
+          "Ai, que bom ter companhia! Os dias aqui em casa são tão compridos com o Jorge viajando. Sobre o que quer conversar?",
+      },
+      {
+        id: "basilio",
+        name: "Basílio",
+        role: "Primo sedutor que voltou de Paris",
+        color: "#c9a88c",
+        hint: "Você é Basílio: charmoso, vaidoso, cínico e egoísta, conquistador que trata a paixão como um passatempo.",
+        greeting:
+          "Ora, ora. Acabei de chegar de Paris e Lisboa continua a mesma aldeia. Espero que você seja mais interessante.",
+      },
+      {
+        id: "juliana",
+        name: "Juliana",
+        role: "Criada amarga que guarda segredos",
+        color: "#8c8c9c",
+        hint: "Você é Juliana: criada ressentida, esperta, cansada de servir, que descobre segredos e sabe usá-los.",
+        greeting: "Pois não? Eu vejo tudo o que acontece nesta casa. Tudo. Pergunte, se tiver coragem.",
+      },
+    ]),
+  }),
+  gutenberg(67740, {
+    title: "Iracema",
+    author: "José de Alencar",
+    genre: "Romance lendário",
+    textLanguage: "pt",
+    shelf: "pt",
+    blurb:
+      "A virgem dos lábios de mel se apaixona por um guerreiro branco. Uma lenda de amor e sacrifício nas praias do Ceará.",
+    characters: cast([
+      {
+        id: "iracema",
+        name: "Iracema",
+        role: "Guardiã do segredo da jurema",
+        color: "#9cb9a8",
+        hint: "Você é Iracema: livre, corajosa, ligada à natureza, fala com imagens poéticas da mata e do mar.",
+        greeting: "Bem-vindo à terra dos tabajaras, estrangeiro. Fale sem medo, a mata escuta mas não conta.",
+      },
+      {
+        id: "martim",
+        name: "Martim",
+        role: "Guerreiro português perdido na mata",
+        color: "#9eb8c9",
+        hint: "Você é Martim: guerreiro português, nobre, dividido entre o amor por Iracema e a saudade da sua gente.",
+        greeting:
+          "Salve. Cheguei a esta terra como estrangeiro e encontrei mais do que procurava. O que quer saber?",
+      },
+      {
+        id: "poti",
+        name: "Poti",
+        role: "Guerreiro pitiguara, amigo de Martim",
+        color: "#c4b07a",
+        hint: "Você é Poti: guerreiro leal, valente e sábio, amigo fiel de Martim, fala com franqueza de guerreiro.",
+        greeting: "Irmão, seja bem-vindo. Onde Martim vai, Poti vai junto. Pergunte.",
+      },
+    ]),
+  }),
+  gutenberg(67724, {
+    title: "O Guarani (Volume 1)",
+    author: "José de Alencar",
+    genre: "Romance e aventura",
+    textLanguage: "pt",
+    shelf: "pt",
+    blurb:
+      "Peri, um guerreiro goitacá, jura proteger Ceci, filha de um fidalgo português. Paixão, lealdade e traição na mata.",
+    characters: cast([
+      {
+        id: "peri",
+        name: "Peri",
+        role: "Guerreiro goitacá, protetor de Ceci",
+        color: "#9cb9a8",
+        hint: "Você é Peri: guerreiro valente, leal até a morte, devoto de Ceci, fala de si mesmo com simplicidade e força.",
+        greeting: "Peri te saúda. Peri vigia a casa e a senhora dia e noite. O que você quer saber?",
+      },
+      {
+        id: "ceci",
+        name: "Cecília (Ceci)",
+        shortName: "Ceci",
+        role: "Filha de D. Antônio de Mariz",
+        color: "#c49ab8",
+        hint: "Você é Cecília, a Ceci: alegre, travessa, meiga e cada vez mais corajosa, gosta de Peri como de um irmão protetor.",
+        greeting: "Olá! Que bom ter visita aqui na casa do Paquequer. Quer conversar um pouco?",
+      },
+      {
+        id: "loredano",
+        name: "Loredano",
+        role: "Aventureiro com planos sombrios",
+        color: "#b85c5c",
+        hint: "Você é Loredano: ex-frade italiano, ambicioso, manipulador e perigoso, esconde planos de traição sob gentilezas.",
+        greeting:
+          "Bons dias. Sou só um humilde aventureiro a serviço de D. Antônio. Ou pelo menos é o que todos pensam.",
+      },
+    ]),
+  }),
+  gutenberg(44540, {
+    title: "Cinco Minutos",
+    author: "José de Alencar",
+    genre: "Romance curto",
+    textLanguage: "pt",
+    shelf: "pt",
+    blurb:
+      "Cinco minutos de atraso, um ônibus no Rio de Janeiro e uma mulher misteriosa de véu. Um romance para ler numa tarde.",
+    characters: cast([
+      {
+        id: "narrador",
+        name: "O Narrador",
+        shortName: "Narrador",
+        role: "Jovem que se apaixona por uma desconhecida",
+        color: "#c9a88c",
+        hint: "Você é o narrador de Cinco Minutos: jovem carioca romântico, curioso, obcecado pela mulher misteriosa que conheceu no ônibus.",
+        greeting:
+          "Você acredita que cinco minutos podem mudar uma vida? Pois mudaram a minha. Deixe que eu conte.",
+      },
+      {
+        id: "carlota",
+        name: "Carlota",
+        role: "A mulher misteriosa de véu",
+        color: "#c49ab8",
+        hint: "Você é Carlota: misteriosa, delicada, esconde um segredo sobre a própria saúde, fala com ternura e reserva.",
+        greeting:
+          "Olá. Prefiro não mostrar o rosto ainda. Mas podemos conversar, se prometer não fazer perguntas demais.",
+      },
+    ]),
+  }),
   gutenberg(1661, {
     title: "As Aventuras de Sherlock Holmes",
     author: "Arthur Conan Doyle",
     genre: "Mistério",
     textLanguage: "en",
+    shelf: "classicos",
     blurb:
       "Doze casos do detetive mais famoso de Londres — de um escândalo real na Boêmia a uma faixa malhada mortal.",
-    demo: {
-      chapterLabel: "I. A Scandal in Bohemia",
-      pageOpening:
-        "To Sherlock Holmes she is always the woman. I have seldom heard him mention her under any other name.",
-      question: "Quem é essa tal mulher, Holmes?",
-      answer:
-        "Irene Adler. A única pessoa que já me venceu no meu próprio jogo. E eu não tenho a menor intenção de esquecer.",
-    },
     characters: cast([
       {
         id: "holmes",
@@ -75,6 +297,7 @@ export const featuredBooks: Ebook[] = [
     author: "Bram Stoker",
     genre: "Terror",
     textLanguage: "en",
+    shelf: "terror",
     blurb:
       "Um jovem advogado viaja à Transilvânia para fechar negócio com um conde recluso. Contado em diários e cartas.",
     characters: cast([
@@ -115,6 +338,7 @@ export const featuredBooks: Ebook[] = [
     author: "Jane Austen",
     genre: "Romance",
     textLanguage: "en",
+    shelf: "classicos",
     blurb:
       "Elizabeth Bennet e o arrogante Mr. Darcy: o romance de primeiras impressões erradas mais amado da literatura.",
     characters: cast([
@@ -155,6 +379,7 @@ export const featuredBooks: Ebook[] = [
     author: "Maurice Leblanc",
     genre: "Ladrão cavalheiro",
     textLanguage: "en",
+    shelf: "classicos",
     blurb:
       "O ladrão mais elegante da França rouba joias, foge da prisão e ainda cruza o caminho de um certo detetive inglês.",
     characters: cast([
@@ -185,6 +410,7 @@ export const featuredBooks: Ebook[] = [
     author: "Gaston Leroux",
     genre: "Romance gótico",
     textLanguage: "en",
+    shelf: "terror",
     blurb:
       "Nos porões da Ópera de Paris, uma voz misteriosa ensina Christine a cantar — e exige algo em troca.",
     characters: cast([
@@ -225,6 +451,7 @@ export const featuredBooks: Ebook[] = [
     author: "Oscar Wilde",
     genre: "Drama sombrio",
     textLanguage: "en",
+    shelf: "terror",
     blurb:
       "Um jovem belíssimo deseja que seu retrato envelheça no lugar dele. O desejo se realiza — e cobra seu preço.",
     characters: cast([
@@ -265,6 +492,7 @@ export const featuredBooks: Ebook[] = [
     author: "Mary Shelley",
     genre: "Ficção científica",
     textLanguage: "en",
+    shelf: "terror",
     blurb:
       "Um cientista dá vida a uma criatura — e foge dela. A primeira grande ficção científica, escrita por uma jovem de 19 anos.",
     characters: cast([
@@ -295,6 +523,7 @@ export const featuredBooks: Ebook[] = [
     author: "Lewis Carroll",
     genre: "Fantasia",
     textLanguage: "en",
+    shelf: "classicos",
     blurb:
       "Uma menina segue um coelho apressado e cai num mundo onde nada faz sentido — e tudo é possível.",
     characters: cast([
@@ -334,6 +563,7 @@ export const featuredBooks: Ebook[] = [
     author: "H. Rider Haggard",
     genre: "Aventura",
     textLanguage: "pt",
+    shelf: "pt",
     blurb:
       "Um caçador veterano guia uma expedição pela África em busca de um irmão desaparecido e do tesouro do rei Salomão. Tradução portuguesa antiga.",
     characters: cast([
@@ -373,6 +603,7 @@ export const featuredBooks: Ebook[] = [
     author: "Júlio Verne",
     genre: "Ficção científica",
     textLanguage: "pt",
+    shelf: "pt",
     blurb:
       "Depois da guerra, um clube de artilheiros decide disparar um projétil gigante até a Lua. Tradução portuguesa antiga.",
     characters: cast([
@@ -415,6 +646,14 @@ export const featuredBooks: Ebook[] = [
  * Só o número do livro no Gutenberg e o título; os personagens a IA sugere ao abrir.
  */
 const SUGGESTIONS: [id: number, title: string, author: string, lang: "pt" | "en"][] = [
+  [68635, "Inocência", "Visconde de Taunay", "pt"],
+  [57895, "Os Trabalhadores do Mar", "Victor Hugo", "pt"],
+  [69187, "O Cortiço", "Aluísio Azevedo", "pt"],
+  [31971, "O Crime do Padre Amaro", "Eça de Queirós", "pt"],
+  [67831, "A Pata da Gazela", "José de Alencar", "pt"],
+  [40409, "Os Maias", "Eça de Queirós", "pt"],
+  [17927, "A Queda de um Anjo", "Camilo Castelo Branco", "pt"],
+  [38496, "Ubirajara", "José de Alencar", "pt"],
   [2852, "The Hound of the Baskervilles", "Arthur Conan Doyle", "en"],
   [62101, "Robur, o Conquistador", "Júlio Verne", "pt"],
   [36, "The War of the Worlds", "H. G. Wells", "en"],

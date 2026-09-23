@@ -12,6 +12,9 @@ const CHAPTER_RE = /^[ \t]*((?:chapter|cap[ií]tulo)[ \t]+(?:[ivxlcdm]+|\d+)\b.{
 /** Contos numerados: "I. A SCANDAL IN BOHEMIA", "IV. The Mysterious Traveller". */
 const ROMAN_TITLE_RE = /^((?:[IVXLC]+)\.[ \t]+\S.{0,80})$/gm;
 
+/** Numeral romano sozinho na linha ("I", "II.", "XIV"), comum nos livros em português. */
+const BARE_ROMAN_RE = /^[ \t]*([IVXLC]{1,7})\.?[ \t]*$/gm;
+
 /** Trecho menor que isso entre dois títulos é sumário, não capítulo. */
 const MIN_CHAPTER_CHARS = 1000;
 /** Capítulos maiores são divididos em partes (evita páginas enormes e pesadas). */
@@ -19,7 +22,15 @@ const MAX_CHAPTER_CHARS = 45_000;
 /** Sem marcações de capítulo, o livro é dividido em partes deste tamanho. */
 const PAGE_CHARS = 25_000;
 
-function findHeadings(text: string, re: RegExp): { start: number; headline: string }[] {
+/**
+ * `dedupe`: descarta títulos que reaparecem adiante (sumário no começo do livro). Desligado
+ * para numerais soltos, porque livros divididos em partes recomeçam a numeração (I, II… I, II…).
+ */
+function findHeadings(
+  text: string,
+  re: RegExp,
+  dedupe = true,
+): { start: number; headline: string }[] {
   const found: { start: number; headline: string }[] = [];
   re.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -32,7 +43,7 @@ function findHeadings(text: string, re: RegExp): { start: number; headline: stri
   return found.filter((h, i) => {
     const end = i + 1 < found.length ? found[i + 1].start : text.length;
     if (end - h.start < MIN_CHAPTER_CHARS) return false;
-    return !found.slice(i + 1).some((later) => key(later.headline) === key(h.headline));
+    return !dedupe || !found.slice(i + 1).some((later) => key(later.headline) === key(h.headline));
   });
 }
 
@@ -63,6 +74,12 @@ export function splitIntoChapters(fullText: string): StoryChapter[] {
   if (headings.length < 3) {
     const roman = findHeadings(text, ROMAN_TITLE_RE);
     if (roman.length >= 3) headings = roman;
+  }
+  if (headings.length < 3) {
+    const bare = findHeadings(text, BARE_ROMAN_RE, false);
+    if (bare.length >= 3) {
+      headings = bare.map((h) => ({ ...h, headline: `Capítulo ${h.headline.replace(/\.$/, "")}` }));
+    }
   }
 
   const raw: { label: string; body: string }[] = [];

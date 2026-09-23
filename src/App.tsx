@@ -197,6 +197,12 @@ const Icon = {
   ),
 };
 
+const SHELVES: { id: NonNullable<Ebook["shelf"]>; title: string; subtitle: string }[] = [
+  { id: "pt", title: "Em português", subtitle: "Romances e paixões proibidas, direto no nosso idioma." },
+  { id: "terror", title: "Terror e vampiros", subtitle: "Os clássicos do medo. Texto em inglês, conversa em português." },
+  { id: "classicos", title: "Mais clássicos", subtitle: "Mistério, romance e fantasia. Texto em inglês, conversa em português." },
+];
+
 const LANGUAGE_FILTERS: { id: SearchLanguage; label: string }[] = [
   { id: "all", label: "Todos" },
   { id: "pt", label: "Português" },
@@ -206,7 +212,7 @@ const LANGUAGE_FILTERS: { id: SearchLanguage; label: string }[] = [
 /** Busca no acervo inteiro do Project Gutenberg; sem busca, mostra sugestões prontas. */
 function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
   const [query, setQuery] = useState("");
-  const [language, setLanguage] = useState<SearchLanguage>("all");
+  const [language, setLanguage] = useState<SearchLanguage>("pt");
   const [books, setBooks] = useState<Ebook[]>([]);
   const [total, setTotal] = useState(0);
   const [next, setNext] = useState<string | null>(null);
@@ -257,7 +263,9 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
       .finally(() => setLoadingMore(false));
   };
 
-  const shown = searching ? books : suggestedBooks;
+  const shown = searching
+    ? books
+    : suggestedBooks.filter((b) => language === "all" || b.textLanguage === language);
 
   return (
     <section className="explore" id="acervo">
@@ -682,7 +690,7 @@ export function App() {
           <div className="step">
             <span className="step-n">1</span>
             <h3>Escolha uma história</h3>
-            <p>Clássicos de mistério, terror, romance e aventura — ou busque qualquer livro do acervo.</p>
+            <p>Romances em português, terror, vampiros e mistério, ou qualquer livro do acervo.</p>
           </div>
           <div className="step">
             <span className="step-n">2</span>
@@ -696,50 +704,56 @@ export function App() {
           </div>
         </section>
 
-        <section className="shelf" id="destaques">
-          <div className="shelf-head">
-            <h2>Em destaque</h2>
-            <p>Histórias com personagens prontos para conversar.</p>
-          </div>
-          <div className="shelf-grid">
-            {featuredBooks.map((b) => (
-              <article key={b.id} className="book">
-                <button
-                  type="button"
-                  className="book-cover-btn"
-                  onClick={() => startBook(b)}
-                  aria-label={`Abrir ${b.title}`}
-                >
-                  <BookCover book={b} />
-                </button>
-                <div className="book-info">
-                  <div className="book-tags">
-                    {b.genre ? <span className="genre-tag">{b.genre}</span> : null}
-                    <LangBadge book={b} />
-                  </div>
-                  <h3>{b.title}</h3>
-                  <p className="book-author">{b.author}</p>
-                  {b.blurb ? <p className="book-blurb">{b.blurb}</p> : null}
-                  {b.characters?.length ? (
-                    <div className="book-cast">
-                      <span className="avatar-stack">
-                        {b.characters.map((c) => (
-                          <Avatar key={c.id} character={c} size="sm" />
-                        ))}
-                      </span>
-                      <span>Converse com {listNames(b.characters.map(shortNameOf))}</span>
-                    </div>
-                  ) : null}
-                  <div className="book-actions">
-                    <button type="button" className="btn btn-primary" onClick={() => startBook(b)}>
-                      Começar a ler
+        {SHELVES.map((shelf, si) => {
+          const books = featuredBooks.filter((b) => (b.shelf ?? "classicos") === shelf.id);
+          if (books.length === 0) return null;
+          return (
+            <section key={shelf.id} className="shelf" id={si === 0 ? "destaques" : undefined}>
+              <div className="shelf-head">
+                <h2>{shelf.title}</h2>
+                <p>{shelf.subtitle}</p>
+              </div>
+              <div className="shelf-grid">
+                {books.map((b) => (
+                  <article key={b.id} className="book">
+                    <button
+                      type="button"
+                      className="book-cover-btn"
+                      onClick={() => startBook(b)}
+                      aria-label={`Abrir ${b.title}`}
+                    >
+                      <BookCover book={b} />
                     </button>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
+                    <div className="book-info">
+                      <div className="book-tags">
+                        {b.genre ? <span className="genre-tag">{b.genre}</span> : null}
+                        <LangBadge book={b} />
+                      </div>
+                      <h3>{b.title}</h3>
+                      <p className="book-author">{b.author}</p>
+                      {b.blurb ? <p className="book-blurb">{b.blurb}</p> : null}
+                      {b.characters?.length ? (
+                        <div className="book-cast">
+                          <span className="avatar-stack">
+                            {b.characters.map((c) => (
+                              <Avatar key={c.id} character={c} size="sm" />
+                            ))}
+                          </span>
+                          <span>Converse com {listNames(b.characters.map(shortNameOf))}</span>
+                        </div>
+                      ) : null}
+                      <div className="book-actions">
+                        <button type="button" className="btn btn-primary" onClick={() => startBook(b)}>
+                          Começar a ler
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          );
+        })}
 
         <Explore onOpen={startBook} />
 
