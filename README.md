@@ -21,6 +21,7 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
 - **Leitura por capítulos**, com seletor de capítulo, barra de progresso, modo noturno ou sépia e quatro tamanhos de letra.
 - **Chat com os personagens**, com troca de personagem, sugestões de perguntas para começar e animação de "digitando".
 - **Personagens gerados por IA** para qualquer livro do acervo que não esteja nos destaques.
+- **Livros fora do acervo**: na busca, livros famosos que ainda têm direitos autorais (ex.: *Crepúsculo*) aparecem com capa, autor e ano, vindos do catálogo aberto da [Open Library](https://openlibrary.org) (só os dados do livro, nunca o texto), com um botão que abre a importação já preenchida.
 - **Importar meu livro** (.epub, .pdf ou .txt): o arquivo é lido e guardado só no navegador do leitor (IndexedDB), sem servidor e sem IA. Os personagens podem ser digitados na importação; em branco, a IA sugere o elenco ao abrir o livro. Livros com DRM e PDFs escaneados (sem texto) não abrem.
 - **Layout responsivo**: no celular, o chat vira um painel deslizante aberto por um botão flutuante.
 
@@ -56,6 +57,7 @@ src/
     ├── cast.ts             Elenco do livro (escrito à mão, digitado pelo leitor, em cache ou gerado pela IA)
     ├── importBook.ts       Leitura de .epub (fflate), .pdf (pdf.js, carregado sob demanda) e .txt
     ├── localBooks.ts       Livros importados guardados no IndexedDB do navegador
+    ├── openLibrary.ts      Livros fora do acervo (título, autor, ano e capa) para a busca
     ├── readingContext.ts   Trecho do livro perto da posição de leitura
     └── readingAmbient.ts   Mensagens automáticas ao trocar e ao passar do meio do capítulo
 ```

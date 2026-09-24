@@ -28,6 +28,7 @@ import {
   type ReadingProgress,
 } from "./lib/progress";
 import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
+import { searchOutsideCatalog, type BookHint } from "./lib/openLibrary";
 import { excerptNearScrollRatio } from "./lib/readingContext";
 import {
   cachedTranslation,
@@ -243,7 +244,14 @@ const LANGUAGE_FILTERS: { id: SearchLanguage; label: string }[] = [
 ];
 
 /** Busca no acervo inteiro do Project Gutenberg; sem busca, mostra sugestões prontas. */
-function Explore({ onOpen, onImport }: { onOpen: (b: Ebook) => void; onImport: () => void }) {
+function Explore({
+  onOpen,
+  onImport,
+}: {
+  onOpen: (b: Ebook) => void;
+  /** Abre o formulário de importação; com `hint`, já preenchido com o livro escolhido. */
+  onImport: (hint?: BookHint) => void;
+}) {
   const [query, setQuery] = useState("");
   const [language, setLanguage] = useState<SearchLanguage>("pt");
   const [books, setBooks] = useState<Ebook[]>([]);
@@ -255,6 +263,23 @@ function Explore({ onOpen, onImport }: { onOpen: (b: Ebook) => void; onImport: (
 
   const term = query.trim();
   const searching = term.length >= 2;
+
+  /** Livros famosos fora do acervo (Open Library), buscados junto com o Gutenberg. */
+  const [outside, setOutside] = useState<BookHint[]>([]);
+  useEffect(() => {
+    setOutside([]);
+    if (!searching) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      searchOutsideCatalog(term)
+        .then((hints) => !cancelled && setOutside(hints))
+        .catch(() => undefined); // Sem a Open Library, a busca do acervo continua normal.
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [term, searching]);
 
   useEffect(() => {
     if (!searching) {
@@ -344,7 +369,7 @@ function Explore({ onOpen, onImport }: { onOpen: (b: Ebook) => void; onImport: (
         <p className="explore-note">
           Nenhum livro encontrado para “{term}”. O acervo só tem livros em domínio público; se você
           tem o arquivo do livro,{" "}
-          <button type="button" className="inline-link" onClick={onImport}>
+          <button type="button" className="inline-link" onClick={() => onImport()}>
             importe o seu
           </button>
           .
@@ -380,6 +405,41 @@ function Explore({ onOpen, onImport }: { onOpen: (b: Ebook) => void; onImport: (
         </div>
       ) : null}
 
+      {searching && outside.length > 0 ? (
+        <div className="outside">
+          <div className="outside-head">
+            <h3>Fora do acervo</h3>
+            <p>
+              Estes livros ainda têm direitos autorais, então não estão no acervo. Tem o arquivo? Importe e
+              leia aqui, com os personagens.
+            </p>
+          </div>
+          <div className="result-grid">
+            {outside.map((h) => (
+              <div key={`${h.title}|${h.author}`} className="result outside-book">
+                <div className="cover">
+                  <img className="cover-photo is-loaded" src={h.coverUrl} alt="" loading="lazy" />
+                </div>
+                <strong>{h.title}</strong>
+                <span>
+                  {h.author}
+                  {h.year ? ` · ${h.year}` : ""}
+                </span>
+                <button
+                  type="button"
+                  className="btn outside-import"
+                  onClick={() => onImport(h)}
+                  aria-label={`Importar o meu arquivo de ${h.title}`}
+                >
+                  {Icon.upload}
+                  Importar
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {searching && status === "ready" && next ? (
         <div className="explore-more">
           <button type="button" className="btn" onClick={loadMore} disabled={loadingMore}>
@@ -395,15 +455,20 @@ function Explore({ onOpen, onImport }: { onOpen: (b: Ebook) => void; onImport: (
 function MyBooks({
   onOpen,
   onRemoved,
-  open,
-  setOpen,
+  request,
+  setRequest,
 }: {
   onOpen: (b: Ebook) => void;
   onRemoved: () => void;
-  /** O formulário também abre pelo topo da página, pelo destaque e pela busca sem resultado. */
-  open: boolean;
-  setOpen: (open: boolean) => void;
+  /**
+   * Formulário aberto (`null` = fechado). Abre pelo topo da página, pelo destaque e pela busca;
+   * vindo de um livro "Fora do acervo", já traz título, autor e capa.
+   */
+  request: BookHint | Record<string, never> | null;
+  setRequest: (r: BookHint | Record<string, never> | null) => void;
 }) {
+  const open = request !== null;
+  const hint = request && "title" in request ? request : null;
   const [books, setBooks] = useState<Ebook[]>([]);
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -423,7 +488,7 @@ function MyBooks({
 
   const close = useCallback(() => {
     if (saving) return;
-    setOpen(false);
+    setRequest(null);
     setParsing(false);
     setError(null);
     setParsed(null);
@@ -431,7 +496,7 @@ function MyBooks({
     setTitle("");
     setAuthor("");
     setCastText("");
-  }, [saving, setOpen]);
+  }, [saving, setRequest]);
 
   useEffect(() => {
     if (!open) return;
@@ -451,8 +516,9 @@ function MyBooks({
     try {
       const book = await importBookFile(file);
       setParsed(book);
-      setTitle(book.title);
-      setAuthor(book.author);
+      // Livro escolhido em "Fora do acervo": vale o título em português do catálogo.
+      setTitle(hint?.title ?? book.title);
+      setAuthor(hint?.author || book.author);
       setLanguage(book.language);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Não foi possível ler este arquivo.");
@@ -473,6 +539,7 @@ function MyBooks({
       title: bookTitle,
       author: author.trim() || "Autor não informado",
       genre: "Meu livro",
+      ...(hint?.coverUrl ? { coverUrl: hint.coverUrl } : {}),
       textLanguage: language,
       source: "local",
       // Sem nomes digitados, a IA sugere o elenco ao abrir o livro (uma vez só).
@@ -510,7 +577,7 @@ function MyBooks({
       </div>
 
       <div className="result-grid">
-        <button type="button" className="result" onClick={() => setOpen(true)}>
+        <button type="button" className="result" onClick={() => setRequest({})}>
           <div className="cover import-cover" aria-hidden="true">
             <span className="import-plus">+</span>
             <span className="import-formats">EPUB · PDF · TXT</span>
@@ -543,7 +610,7 @@ function MyBooks({
             aria-labelledby="import-title"
           >
             <div className="import-head">
-              <h3 id="import-title">Importar meu livro</h3>
+              <h3 id="import-title">{hint ? `Importar “${hint.title}”` : "Importar meu livro"}</h3>
               <button type="button" className="icon-btn" onClick={close} aria-label="Fechar">
                 {Icon.close}
               </button>
@@ -684,7 +751,7 @@ export function App() {
   const [prefs, setPrefs] = useState(loadPrefs);
   /** Redesenha a página inicial quando um livro importado é removido (sai de "Continue lendo"). */
   const [, setHomeTick] = useState(0);
-  const [importOpen, setImportOpen] = useState(false);
+  const [importRequest, setImportRequest] = useState<BookHint | Record<string, never> | null>(null);
   useEffect(() => {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -1089,7 +1156,7 @@ export function App() {
               <span className="status-dot" aria-hidden="true" />
               {providerLabel}
             </span>
-            <button type="button" className="btn nav-import" onClick={() => setImportOpen(true)}>
+            <button type="button" className="btn nav-import" onClick={() => setImportRequest({})}>
               {Icon.upload}
               Importar livro
             </button>
@@ -1115,7 +1182,7 @@ export function App() {
               <a className="btn btn-lg" href="#acervo">
                 Buscar no acervo
               </a>
-              <button type="button" className="btn btn-lg" onClick={() => setImportOpen(true)}>
+              <button type="button" className="btn btn-lg" onClick={() => setImportRequest({})}>
                 {Icon.upload}
                 Importar meu livro
               </button>
@@ -1234,11 +1301,11 @@ export function App() {
         <MyBooks
           onOpen={startBook}
           onRemoved={() => setHomeTick((n) => n + 1)}
-          open={importOpen}
-          setOpen={setImportOpen}
+          request={importRequest}
+          setRequest={setImportRequest}
         />
 
-        <Explore onOpen={startBook} onImport={() => setImportOpen(true)} />
+        <Explore onOpen={startBook} onImport={(hint) => setImportRequest(hint ?? {})} />
 
         <footer className="home-foot">
           Storyverse · leitura que conversa com você · textos em domínio público do{" "}

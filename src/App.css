@@ -1883,3 +1883,44 @@
     display: none;
   }
 }
+
+/* ---- Fora do acervo (Open Library) ---- */
+
+.outside {
+  margin-top: 2.5rem;
+  padding-top: 1.8rem;
+  border-top: 1px solid var(--border);
+}
+
+.outside-head {
+  margin-bottom: 1.2rem;
+}
+
+.outside-head h3 {
+  margin: 0 0 0.3rem;
+  font-family: var(--font-read);
+  font-size: 1.3rem;
+  font-weight: 600;
+}
+
+.outside-head p {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.outside-book {
+  cursor: default;
+}
+
+.outside-book:hover .cover {
+  transform: none;
+}
+
+.outside-import {
+  margin-top: 0.35rem;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.78rem;
+}
