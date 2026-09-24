@@ -10,6 +10,7 @@ import {
 import { loadCast } from "./lib/cast";
 import { splitIntoChapters } from "./lib/chapters";
 import { fetchBookText, searchBooks, type SearchLanguage } from "./lib/gutenberg";
+import { loadProgress, progressPct, recentProgress, saveProgress, type ReadingProgress } from "./lib/progress";
 import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
 import { excerptNearScrollRatio } from "./lib/readingContext";
 import "./App.css";
@@ -353,6 +354,41 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
   );
 }
 
+/** Livros começados, para retomar do ponto onde o leitor parou. */
+function ContinueReading({ items, onOpen }: { items: ReadingProgress[]; onOpen: (b: Ebook) => void }) {
+  return (
+    <section className="shelf continue">
+      <div className="shelf-head">
+        <h2>Continue lendo</h2>
+        <p>Volte exatamente de onde parou.</p>
+      </div>
+      <div className="result-grid">
+        {items.map((p) => {
+          const pct = Math.round(progressPct(p));
+          return (
+            <button
+              key={p.book.gutenbergId}
+              type="button"
+              className="result"
+              onClick={() => onOpen(p.book)}
+              aria-label={`Continuar ${p.book.title}, ${p.chapterLabel}, ${pct}% lido`}
+            >
+              <BookCover book={p.book} />
+              <span className="continue-bar" aria-hidden="true">
+                <span style={{ width: `${Math.max(pct, 3)}%` }} />
+              </span>
+              <strong>{p.book.title}</strong>
+              <span>
+                {p.chapterLabel} · {pct}%
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const [book, setBook] = useState<Ebook | null>(null);
 
@@ -387,6 +423,8 @@ export function App() {
   const [scrollRatio, setScrollRatio] = useState(0);
   /** Uma dica de “meio de capítulo” por índice de capítulo (evita várias mensagens seguidas). */
   const midChapterNudgeSentRef = useRef<Record<number, boolean>>({});
+  /** Rolagem salva a reaplicar quando o capítulo onde o leitor parou for desenhado. */
+  const restoreScrollRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!book) return;
@@ -402,12 +440,16 @@ export function App() {
     fetchBookText(book.gutenbergId)
       .then((text) => {
         if (cancelled) return;
+        const saved = loadProgress(book.gutenbergId);
+        const chapterCount = splitIntoChapters(text).length;
+        if (saved && saved.chapterIndex < chapterCount) {
+          setChapterIndex(saved.chapterIndex);
+          restoreScrollRef.current = saved.scrollRatio;
+          // Quem volta para o meio do capítulo não precisa da dica de “meio de capítulo”.
+          if (saved.scrollRatio >= 0.42) midChapterNudgeSentRef.current[saved.chapterIndex] = true;
+        }
         setFullText(text);
         setLoadState("ready");
-        requestAnimationFrame(() => {
-          const el = readRef.current;
-          if (el) el.scrollTop = 0;
-        });
         return loadCast(book, text.slice(0, 3000)).then((list) => {
           if (cancelled) return;
           setCast(list);
@@ -489,6 +531,39 @@ export function App() {
     setScrollRatio(0);
   }, [chapterIndex]);
 
+  /** Capítulo novo começa do topo; ao reabrir o livro, volta para onde o leitor parou. */
+  useEffect(() => {
+    if (loadState !== "ready") return;
+    const frame = requestAnimationFrame(() => {
+      const el = readRef.current;
+      const ratio = restoreScrollRef.current;
+      restoreScrollRef.current = null;
+      if (!el) return;
+      el.scrollTop = ratio ? ratio * (el.scrollHeight - el.clientHeight) : 0;
+      onReadScroll();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [chapterIndex, loadState, onReadScroll]);
+
+  useEffect(() => {
+    if (!book || loadState !== "ready" || !currentChapter) return;
+    if (restoreScrollRef.current !== null) return; // Ainda não voltou para a posição salva.
+    // Abrir e fechar um livro sem ler nada não o coloca em “Continue lendo”.
+    if (chapterIndex === 0 && scrollRatio < 0.02 && !loadProgress(book.gutenbergId)) return;
+    const t = setTimeout(
+      () =>
+        saveProgress({
+          book,
+          chapterIndex,
+          chapterLabel: currentChapter.label,
+          chapterCount: chapters.length,
+          scrollRatio,
+        }),
+      300,
+    );
+    return () => clearTimeout(t);
+  }, [book, loadState, chapterIndex, currentChapter, chapters.length, scrollRatio]);
+
   /** Ao trocar de personagem, não dispara de novo a dica do meio se a rolagem já passou do meio. */
   useEffect(() => {
     const el = readRef.current;
@@ -504,10 +579,6 @@ export function App() {
 
     if (prevChapterIdxRef.current === null) {
       prevChapterIdxRef.current = chapterIndex;
-      requestAnimationFrame(() => {
-        readRef.current?.scrollTo({ top: 0 });
-        onReadScroll();
-      });
       return;
     }
     if (prevChapterIdxRef.current === chapterIndex) return;
@@ -518,11 +589,7 @@ export function App() {
       ...prev,
       [character.id]: [...(prev[character.id] ?? []), { id: uid(), role: "assistant", text: line }],
     }));
-    requestAnimationFrame(() => {
-      readRef.current?.scrollTo({ top: 0 });
-      onReadScroll();
-    });
-  }, [chapterIndex, character, loadState, currentChapter, activeCharId, onReadScroll]);
+  }, [chapterIndex, character, loadState, currentChapter, activeCharId]);
 
   useEffect(() => {
     if (!character || !currentChapter || loadState !== "ready" || loading) return;
@@ -613,6 +680,8 @@ export function App() {
   }
 
   if (!book) {
+    const recent = recentProgress();
+    const progressById = new Map(recent.map((p) => [p.book.gutenbergId, p]));
     const heroBook = featuredBooks.find((b) => b.demo && b.characters?.length);
     const heroChar = heroBook?.characters?.[0];
     return (
@@ -704,6 +773,8 @@ export function App() {
           </div>
         </section>
 
+        {recent.length > 0 ? <ContinueReading items={recent} onOpen={startBook} /> : null}
+
         {SHELVES.map((shelf, si) => {
           const books = featuredBooks.filter((b) => (b.shelf ?? "classicos") === shelf.id);
           if (books.length === 0) return null;
@@ -744,7 +815,7 @@ export function App() {
                       ) : null}
                       <div className="book-actions">
                         <button type="button" className="btn btn-primary" onClick={() => startBook(b)}>
-                          Começar a ler
+                          {progressById.has(b.gutenbergId) ? "Continuar lendo" : "Começar a ler"}
                         </button>
                       </div>
                     </div>

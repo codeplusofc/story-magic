@@ -770,6 +770,26 @@
   text-overflow: ellipsis;
 }
 
+.continue {
+  margin-bottom: 3.5rem;
+}
+
+.continue-bar {
+  display: block;
+  height: 4px;
+  margin: -0.1rem 0 0.25rem;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  overflow: hidden;
+}
+
+.continue-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
 .result-skeleton {
   cursor: default;
 }
