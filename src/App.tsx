@@ -50,7 +50,19 @@ import {
 } from "./lib/readingStats";
 import { useInstallPrompt } from "./lib/pwa";
 import { renderShareCard, shareOrDownload, type ShareCardInput } from "./lib/shareCard";
-import { speakParagraphs, speechSupported, type SpeechSession } from "./lib/speech";
+import {
+  listVoices,
+  RATE_OPTIONS,
+  saveRate,
+  savedRate,
+  savedVoiceUri,
+  saveVoiceUri,
+  speakParagraphs,
+  speakSample,
+  speechSupported,
+  type SpeechSession,
+  type VoiceOption,
+} from "./lib/speech";
 import { countMessage, DAILY_MESSAGE_LIMIT, messagesLeftToday } from "./lib/usageLimit";
 import {
   cachedTranslation,
@@ -911,7 +923,10 @@ export function App() {
   /* Leitura em voz alta. */
   const [speaking, setSpeaking] = useState(false);
   const [speakingBlock, setSpeakingBlock] = useState<number | null>(null);
-  const [speechRate, setSpeechRate] = useState(1);
+  const [speechRate, setSpeechRate] = useState(savedRate);
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const [voiceUri, setVoiceUri] = useState<string | undefined>(undefined);
   const speechRef = useRef<SpeechSession | null>(null);
   /** A voz chegou ao fim do capítulo e segue no próximo. */
   const continueSpeechRef = useRef(false);
@@ -1053,6 +1068,7 @@ export function App() {
     continueSpeechRef.current = false;
     setSpeaking(false);
     setSpeakingBlock(null);
+    setVoicePanelOpen(false);
   }, []);
 
   const leaveBook = useCallback(() => {
@@ -1327,6 +1343,34 @@ export function App() {
 
   /* ---- Leitura em voz alta ---- */
   const canSpeak = speechSupported();
+  const speakLang: "pt" | "en" = !book ? "pt" : translateOn ? "pt" : book.textLanguage;
+
+  useEffect(() => {
+    if (!voicePanelOpen) return;
+    let alive = true;
+    void listVoices(speakLang).then((list) => {
+      if (!alive) return;
+      setVoices(list);
+      const saved = savedVoiceUri(speakLang);
+      setVoiceUri(list.some((v) => v.uri === saved) ? saved : list[0]?.uri);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [voicePanelOpen, speakLang]);
+
+  function chooseVoice(uri: string) {
+    setVoiceUri(uri);
+    saveVoiceUri(speakLang, uri);
+    if (speaking) startSpeaking(speakingBlock ?? firstVisibleBlock());
+    else speakSample(uri, speakLang, speechRate);
+  }
+
+  function chooseRate(rate: number) {
+    setSpeechRate(rate);
+    saveRate(rate);
+    if (speaking) startSpeaking(speakingBlock ?? firstVisibleBlock(), rate);
+  }
 
   function firstVisibleBlock(): number {
     const el = readRef.current;
@@ -1340,7 +1384,7 @@ export function App() {
   function startSpeaking(from: number, rate = speechRate) {
     if (!book) return;
     speechRef.current?.stop();
-    const lang = translateOn ? "pt" : book.textLanguage;
+    const lang = speakLang;
     const hasNext = chapterIndex < chapters.length - 1;
     setSpeaking(true);
     speechRef.current = speakParagraphs(
@@ -1619,12 +1663,28 @@ export function App() {
                 Instalar app
               </button>
             ) : null}
-            <button type="button" className="btn nav-import" onClick={() => setImportRequest({})}>
+            <button
+              type="button"
+              className="btn nav-import"
+              onClick={() => setImportRequest({})}
+              aria-label="Importar livro"
+            >
               {Icon.upload}
-              Importar livro
+              <span className="nav-import-long">Importar livro</span>
+              <span className="nav-import-short">Importar</span>
             </button>
           </div>
         </nav>
+
+        {install ? (
+          // No celular o convite fica aqui, fora do topo (lá não cabe junto com "Importar livro").
+          <div className="install-banner">
+            <span>Instale o Storyverse no celular: abre em tela cheia e funciona sem internet.</span>
+            <button type="button" className="btn btn-primary" onClick={() => void install()}>
+              Instalar
+            </button>
+          </div>
+        ) : null}
 
         <header className="hero">
           <div className="hero-copy">
@@ -1845,15 +1905,11 @@ export function App() {
               {speaking ? (
                 <button
                   type="button"
-                  className="icon-btn text-btn rate-btn"
-                  onClick={() => {
-                    const rates = [1, 1.25, 1.5, 0.85];
-                    const next = rates[(rates.indexOf(speechRate) + 1) % rates.length];
-                    setSpeechRate(next);
-                    startSpeaking(speakingBlock ?? firstVisibleBlock(), next);
-                  }}
-                  aria-label={`Velocidade da voz: ${speechRate}x`}
-                  title="Velocidade da voz"
+                  className={`icon-btn text-btn rate-btn ${voicePanelOpen ? "is-active" : ""}`}
+                  onClick={() => setVoicePanelOpen((v) => !v)}
+                  aria-expanded={voicePanelOpen}
+                  aria-label={`Voz e velocidade (${speechRate}x)`}
+                  title="Voz e velocidade"
                 >
                   {String(speechRate).replace(".", ",")}x
                 </button>
@@ -2054,6 +2110,64 @@ export function App() {
             </article>
           ) : null}
         </main>
+
+        {voicePanelOpen && speaking ? (
+          <>
+            <div className="voice-backdrop" onClick={() => setVoicePanelOpen(false)} />
+            <div className="voice-panel" role="dialog" aria-label="Voz e velocidade">
+              <div className="voice-panel-head">
+                <strong>Voz e velocidade</strong>
+                <button type="button" className="icon-btn" onClick={() => setVoicePanelOpen(false)} aria-label="Fechar">
+                  {Icon.close}
+                </button>
+              </div>
+
+              <span className="voice-label">Velocidade</span>
+              <div className="voice-rates" role="group" aria-label="Velocidade">
+                {RATE_OPTIONS.map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    className={r === speechRate ? "active" : undefined}
+                    aria-pressed={r === speechRate}
+                    onClick={() => chooseRate(r)}
+                  >
+                    {String(r).replace(".", ",")}x
+                  </button>
+                ))}
+              </div>
+
+              <span className="voice-label">Voz</span>
+              {voices.length === 0 ? (
+                <p className="voice-tip">Procurando as vozes deste aparelho…</p>
+              ) : (
+                <ul className="voice-list">
+                  {voices.map((v) => (
+                    <li key={v.uri}>
+                      <button
+                        type="button"
+                        className={v.uri === voiceUri ? "active" : undefined}
+                        aria-pressed={v.uri === voiceUri}
+                        onClick={() => chooseVoice(v.uri)}
+                      >
+                        <span>{v.label}</span>
+                        {v.natural ? <em>natural</em> : null}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {voices.length > 0 && !voices.some((v) => v.natural) ? (
+                <p className="voice-tip">
+                  Este aparelho só tem vozes simples. Para uma voz quase humana, grátis: abra o Storyverse no{" "}
+                  <strong>Microsoft Edge</strong> (vozes Francisca e Antônio) ou, no iPhone, baixe uma voz{" "}
+                  <strong>Aprimorada</strong> em Ajustes › Acessibilidade › Conteúdo Falado › Vozes.
+                </p>
+              ) : null}
+            </div>
+          </>
+        ) : null}
 
         {selection ? (
           <div

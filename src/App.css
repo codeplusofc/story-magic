@@ -1500,19 +1500,8 @@
 /* ---- Celular / tablet: chat vira painel deslizante ---- */
 
 @media (max-width: 920px) {
-  .reader-bar {
-    flex-wrap: wrap;
-  }
-
-  .chapter-nav {
-    order: 3;
-    flex-basis: 100%;
-    justify-content: center;
-  }
-
   .chapter-select {
-    flex: 1;
-    max-width: 16rem;
+    max-width: 10rem;
   }
 
   .reader-layout {
@@ -2390,5 +2379,306 @@
 
   .rate-btn {
     min-width: 38px;
+  }
+}
+
+/* ============ Zoom do navegador e telas baixas ============ */
+
+/*
+ * Zoom de 150–200% num computador deixa a janela com 640–850 px de largura: a barra do leitor
+ * continua numa linha só. Duas linhas (capítulo embaixo) só no celular em pé.
+ */
+@media (max-width: 760px) and (min-width: 601px) {
+  /* As setas saem; o seletor e o "Próximo capítulo" no fim do texto cobrem a navegação. */
+  .chapter-nav .icon-btn {
+    display: none;
+  }
+
+  .chapter-select {
+    max-width: 8.5rem;
+  }
+}
+
+@media (max-width: 600px) {
+  .reader-bar {
+    flex-wrap: wrap;
+  }
+
+  .chapter-nav {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: center;
+  }
+
+  .chapter-select {
+    flex: 1;
+    max-width: 16rem;
+  }
+}
+
+/* Pouca altura (zoom alto, celular deitado): menos espaço em cabeçalhos, mais para o texto e o chat. */
+@media (max-height: 640px) {
+  .reader-bar {
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+
+  .reader-title span {
+    display: none;
+  }
+
+  .prose {
+    padding-top: 1.25rem;
+  }
+
+  .chapter-head {
+    margin-bottom: 1.25rem;
+  }
+
+  .chapter-head h1 {
+    margin: 0.25rem 0 0.15rem;
+    font-size: 1.6rem;
+  }
+
+  .chat-head {
+    padding: 0.55rem 0.9rem 0.45rem;
+  }
+
+  .chat-head .avatar-lg {
+    width: 34px;
+    height: 34px;
+    font-size: 1rem;
+  }
+
+  .chat-head-text span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cast {
+    padding-bottom: 0.5rem;
+  }
+
+  /* Sugestões numa fileira só, com rolagem para o lado. */
+  .suggestions {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    scrollbar-width: none;
+  }
+
+  .suggestion {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .composer {
+    margin-bottom: 0.5rem;
+  }
+
+  .chat-fab {
+    padding-top: 0.35rem;
+    padding-bottom: 0.35rem;
+    font-size: 0.82rem;
+  }
+
+  .import-panel {
+    gap: 0.7rem;
+    padding: 1rem 1.1rem;
+  }
+}
+
+/* ---- Painel "Voz e velocidade" ---- */
+
+.voice-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+}
+
+.voice-panel {
+  position: fixed;
+  z-index: 45;
+  top: 64px;
+  right: 16px;
+  width: min(340px, calc(100vw - 32px));
+  max-height: calc(100vh - 88px);
+  max-height: calc(100dvh - 88px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--r-border);
+  background: var(--r-panel);
+  color: var(--r-text);
+  box-shadow: var(--shadow-elevated);
+  animation: rise 0.2s var(--ease-out) both;
+}
+
+.voice-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.voice-panel-head strong {
+  font-family: var(--font-read);
+  font-size: 1.05rem;
+  color: var(--r-heading);
+}
+
+.voice-panel-head .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.voice-label {
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--r-muted);
+}
+
+.voice-rates {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.voice-rates button,
+.voice-list button {
+  border: 1px solid var(--r-border);
+  background: var(--r-chip);
+  color: var(--r-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.voice-rates button {
+  flex: 1;
+  padding: 0.4rem 0;
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.voice-rates button.active,
+.voice-list button.active {
+  border-color: var(--r-accent);
+  color: var(--r-accent);
+}
+
+.voice-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.voice-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.voice-list em {
+  flex-shrink: 0;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-pill);
+  background: rgba(155, 196, 181, 0.16);
+  color: var(--accent-2);
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.reader.theme-sepia .voice-list em {
+  background: rgba(60, 120, 100, 0.14);
+  color: #2f6b58;
+}
+
+.voice-tip {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--r-muted);
+}
+
+@media (max-height: 640px) {
+  .voice-panel {
+    top: 54px;
+  }
+}
+
+/* ---- Topo da página inicial no celular ---- */
+
+.home-nav {
+  min-width: 0;
+}
+
+.home-nav .wordmark {
+  flex-shrink: 0;
+}
+
+.home-nav-actions {
+  flex-shrink: 1;
+  justify-content: flex-end;
+}
+
+.nav-import-short {
+  display: none;
+}
+
+.install-banner {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .nav-install {
+    display: none;
+  }
+
+  .install-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    margin: -0.4rem 0 0.6rem;
+    padding: 0.65rem 0.75rem 0.65rem 0.95rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--accent-dim);
+    background: rgba(228, 184, 106, 0.08);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    color: var(--text-read);
+  }
+
+  .install-banner .btn {
+    flex-shrink: 0;
+    padding: 0.45rem 0.9rem;
+    font-size: 0.82rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .nav-import-long {
+    display: none;
+  }
+
+  .nav-import-short {
+    display: inline;
   }
 }
