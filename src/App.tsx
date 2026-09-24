@@ -614,31 +614,13 @@ function MyBooks({
   );
 }
 
-/** Quantas capas cabem numa fileira da grade (muda com a largura da tela). */
-function useGridColumns(ref: React.RefObject<HTMLElement>): number {
-  const [cols, setCols] = useState(6);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      const n = getComputedStyle(el).gridTemplateColumns.split(" ").filter(Boolean).length;
-      if (n > 0) setCols(n);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [ref]);
-  return cols;
-}
+/** Quantos livros "Continue lendo" mostra antes de "Ver todos". */
+const CONTINUE_PREVIEW = 4;
 
-/** Livros começados, para retomar do ponto onde o leitor parou. Mostra uma fileira por vez. */
+/** Livros começados, para retomar do ponto onde o leitor parou: os 4 mais recentes e "Ver todos". */
 function ContinueReading({ items, onOpen }: { items: ReadingProgress[]; onOpen: (b: Ebook) => void }) {
-  const gridRef = useRef<HTMLDivElement>(null);
-  const cols = useGridColumns(gridRef);
-  const [rows, setRows] = useState(1);
-  const shown = items.slice(0, cols * rows);
-  const hidden = items.length - shown.length;
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? items : items.slice(0, CONTINUE_PREVIEW);
 
   return (
     <section className="shelf continue">
@@ -646,7 +628,7 @@ function ContinueReading({ items, onOpen }: { items: ReadingProgress[]; onOpen: 
         <h2>Continue lendo</h2>
         <p>Volte exatamente de onde parou.</p>
       </div>
-      <div className="result-grid" ref={gridRef}>
+      <div className="result-grid">
         {shown.map((p) => {
           const pct = Math.round(progressPct(p));
           return (
@@ -669,17 +651,11 @@ function ContinueReading({ items, onOpen }: { items: ReadingProgress[]; onOpen: 
           );
         })}
       </div>
-      {hidden > 0 || rows > 1 ? (
+      {items.length > CONTINUE_PREVIEW ? (
         <div className="shelf-more">
-          {hidden > 0 ? (
-            <button type="button" className="btn" onClick={() => setRows((r) => r + 2)}>
-              Ver mais ({hidden})
-            </button>
-          ) : (
-            <button type="button" className="btn" onClick={() => setRows(1)}>
-              Mostrar menos
-            </button>
-          )}
+          <button type="button" className="btn" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "Mostrar menos" : `Ver todos (${items.length})`}
+          </button>
         </div>
       ) : null}
     </section>
