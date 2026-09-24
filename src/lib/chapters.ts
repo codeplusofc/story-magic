@@ -8,15 +8,20 @@ export type StoryChapter = {
 };
 
 /** "Chapter 1.", "CHAPTER IV. Título", "CAPITULO I", "Capítulo 3". */
-const CHAPTER_RE = /^[ \t]*((?:chapter|cap[ií]tulo)[ \t]+(?:[ivxlcdm]+|\d+)\b.{0,80})$/gim;
+const CHAPTER_RE =
+  /^[ \t]*((?:chapter|cap[ií]tulo)[ \t]+(?:[ivxlcdm]+|\d+|primeiro|first)(?![a-zà-ú]).{0,80})$/gim;
 /** Contos numerados: "I. A SCANDAL IN BOHEMIA", "IV. The Mysterious Traveller". */
 const ROMAN_TITLE_RE = /^((?:[IVXLC]+)\.[ \t]+\S.{0,80})$/gm;
 
-/** Numeral romano sozinho na linha ("I", "II.", "XIV"), comum nos livros em português. */
-const BARE_ROMAN_RE = /^[ \t]*([IVXLC]{1,7})\.?[ \t]*$/gm;
+/** Numeral romano sozinho na linha ("I", "II.", "LXXXVIII"), comum nos livros em português. */
+const BARE_ROMAN_RE = /^[ \t]*([IVXLC]{1,9})\.?[ \t]*$/gm;
 
-/** Trecho menor que isso entre dois títulos é sumário, não capítulo. */
-const MIN_CHAPTER_CHARS = 1000;
+/**
+ * Trecho menor que isso entre dois títulos é entrada de sumário, não capítulo. Medido em livros
+ * do Gutenberg: entradas de sumário ficam entre 11 e 70 caracteres; os capítulos mais curtos de
+ * Machado de Assis têm a partir de ~100 (o limite antigo, 1.000, engolia dezenas deles).
+ */
+const TOC_ENTRY_MAX_CHARS = 80;
 /** Capítulos maiores são divididos em partes (evita páginas enormes e pesadas). */
 const MAX_CHAPTER_CHARS = 45_000;
 /** Sem marcações de capítulo, o livro é dividido em partes deste tamanho. */
@@ -40,9 +45,21 @@ function findHeadings(
   const key = (h: string) => h.toLowerCase().replace(/[^a-z0-9]/g, "");
   // Descarta entradas de sumário: títulos seguidos de quase nenhum texto,
   // ou que aparecem de novo mais adiante (o sumário vem antes do capítulo real).
-  return found.filter((h, i) => {
+  // Só o número ("chapter xxvii. mina harker's journal" → "xxvii"), para achar o capítulo real.
+  const numberKey = (h: string) =>
+    h.match(/^(?:chapter|cap[ií]tulo)?\s*([ivxlcdm]+|\d+)\b/i)?.[1].toLowerCase() ?? key(h);
+  const isTocEntry = (i: number) => {
     const end = i + 1 < found.length ? found[i + 1].start : text.length;
-    if (end - h.start < MIN_CHAPTER_CHARS) return false;
+    return end - found[i].start < TOC_ENTRY_MAX_CHARS;
+  };
+  return found.filter((h, i) => {
+    if (isTocEntry(i)) return false;
+    // Última linha do sumário: vem depois de outra entrada e é seguida pelo prefácio (por isso
+    // não é curta). Se o mesmo número de capítulo aparece de novo adiante, também é sumário.
+    if (i > 0 && isTocEntry(i - 1)) {
+      const n = numberKey(h.headline);
+      if (found.slice(i + 1).some((later) => numberKey(later.headline) === n)) return false;
+    }
     return !dedupe || !found.slice(i + 1).some((later) => key(later.headline) === key(h.headline));
   });
 }

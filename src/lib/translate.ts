@@ -9,8 +9,20 @@ export type TranslationEngine = "local" | "google";
 
 /** Tamanho de cada pedido de tradução. */
 const CHUNK_CHARS = 2500;
-/** Muda quando a divisão em trechos mudar, para não reaproveitar traduções desalinhadas. */
-const CACHE_PREFIX = "storyverse:tr1:";
+/**
+ * Muda quando a divisão em capítulos ou trechos mudar, para não reaproveitar traduções
+ * desalinhadas (tr2: capítulos curtos deixaram de ser juntados ao anterior).
+ */
+const CACHE_PREFIX = "storyverse:tr2:";
+
+// Traduções guardadas pela versão anterior (tr1) não servem mais: libera o espaço.
+try {
+  for (const k of Object.keys(localStorage)) {
+    if (k.startsWith("storyverse:tr1:")) localStorage.removeItem(k);
+  }
+} catch {
+  // Sem armazenamento disponível.
+}
 /** Parágrafos maiores vão em partes, para a URL do pedido não ficar longa demais. */
 const GOOGLE_MAX_CHARS = 1500;
 /** O MyMemory aceita no máximo 500 bytes por pedido. */
@@ -227,7 +239,7 @@ export function storeTranslation(
     // Armazenamento cheio: descarta as traduções antigas e tenta mais uma vez.
     try {
       for (const k of Object.keys(localStorage)) {
-        if (k.startsWith(CACHE_PREFIX)) localStorage.removeItem(k);
+        if (k.startsWith("storyverse:tr")) localStorage.removeItem(k);
       }
       localStorage.setItem(key, value);
     } catch {

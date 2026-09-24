@@ -37,4 +37,6 @@ export type Ebook = {
   demo?: HeroDemo;
   /** Seção da estante em destaque. */
   shelf?: "pt" | "terror" | "classicos";
+  /** "local": importado pelo leitor, com o texto guardado só no navegador (id negativo). */
+  source?: "gutenberg" | "local";
 };

@@ -51,6 +51,12 @@ export function saveProgress(p: Omit<ReadingProgress, "updatedAt">) {
   writeStore(Object.fromEntries(keep));
 }
 
+export function removeProgress(gutenbergId: number) {
+  const store = readStore();
+  delete store[gutenbergId];
+  writeStore(store);
+}
+
 /** Livros começados, do lido mais recentemente para o mais antigo. */
 export function recentProgress(): ReadingProgress[] {
   return Object.values(readStore())

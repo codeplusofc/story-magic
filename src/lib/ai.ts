@@ -343,7 +343,7 @@ export async function characterReply(params: {
   return callLlmWithFallback(system, messages);
 }
 
-const CAST_COLORS = ["#c9a88c", "#9eb8c9", "#c49ab8", "#9cb9a8", "#c4b07a"];
+export const CAST_COLORS = ["#c9a88c", "#9eb8c9", "#c49ab8", "#9cb9a8", "#c4b07a"];
 
 /** Personagem neutro usado quando a IA não está disponível ou falha ao sugerir o elenco. */
 export function narratorCharacter(title: string): StoryCharacter {

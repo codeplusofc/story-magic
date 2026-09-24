@@ -7,10 +7,26 @@ import {
   USER_MESSAGE_MAX_CHARS,
   type ChatTurn,
 } from "./lib/ai";
-import { loadCast } from "./lib/cast";
+import { castFromNames, forgetCast, loadCast } from "./lib/cast";
 import { splitIntoChapters } from "./lib/chapters";
 import { fetchBookText, searchBooks, type SearchLanguage } from "./lib/gutenberg";
-import { loadProgress, progressPct, recentProgress, saveProgress, type ReadingProgress } from "./lib/progress";
+import { ACCEPTED_EXTENSIONS, importBookFile, type ImportedBook } from "./lib/importBook";
+import {
+  deleteLocalBook,
+  isLocalBook,
+  listLocalBooks,
+  loadLocalBookText,
+  newLocalBookId,
+  saveLocalBook,
+} from "./lib/localBooks";
+import {
+  loadProgress,
+  progressPct,
+  recentProgress,
+  removeProgress,
+  saveProgress,
+  type ReadingProgress,
+} from "./lib/progress";
 import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
 import { excerptNearScrollRatio } from "./lib/readingContext";
 import {
@@ -319,7 +335,10 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
           {slow ? "O acervo está demorando mais que o normal… quase lá." : "Procurando no acervo…"}
         </p>
       ) : status === "ready" && books.length === 0 ? (
-        <p className="explore-note">Nenhum livro encontrado para “{term}”.</p>
+        <p className="explore-note">
+          Nenhum livro encontrado para “{term}”. O acervo só tem livros em domínio público; se você
+          tem o arquivo do livro, <a href="#meus-livros">importe o seu</a>.
+        </p>
       ) : (
         <p className="explore-note">
           {total === null
@@ -356,6 +375,219 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
           <button type="button" className="btn" onClick={loadMore} disabled={loadingMore}>
             {loadingMore ? "Carregando…" : "Carregar mais"}
           </button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/** Livros do próprio leitor (.epub, .pdf, .txt): lidos e guardados só neste aparelho. */
+function MyBooks({ onOpen, onRemoved }: { onOpen: (b: Ebook) => void; onRemoved: () => void }) {
+  const [books, setBooks] = useState<Ebook[]>([]);
+  const [open, setOpen] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [parsed, setParsed] = useState<ImportedBook | null>(null);
+  const [fileName, setFileName] = useState("");
+  const [title, setTitle] = useState("");
+  const [author, setAuthor] = useState("");
+  const [language, setLanguage] = useState<"pt" | "en">("pt");
+  const [castText, setCastText] = useState("");
+
+  useEffect(() => {
+    void listLocalBooks().then(setBooks);
+  }, []);
+
+  const chapterCount = useMemo(() => (parsed ? splitIntoChapters(parsed.text).length : 0), [parsed]);
+
+  const close = useCallback(() => {
+    if (saving) return;
+    setOpen(false);
+    setParsing(false);
+    setError(null);
+    setParsed(null);
+    setFileName("");
+    setTitle("");
+    setAuthor("");
+    setCastText("");
+  }, [saving]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, close]);
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(null);
+    setParsed(null);
+    setFileName(file.name);
+    setParsing(true);
+    try {
+      const book = await importBookFile(file);
+      setParsed(book);
+      setTitle(book.title);
+      setAuthor(book.author);
+      setLanguage(book.language);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível ler este arquivo.");
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!parsed || saving) return;
+    const id = newLocalBookId();
+    const bookTitle = title.trim() || "Meu livro";
+    const characters = castFromNames(bookTitle, castText);
+    const book: Ebook = {
+      id: `local-${-id}`,
+      gutenbergId: id,
+      title: bookTitle,
+      author: author.trim() || "Autor não informado",
+      genre: "Meu livro",
+      textLanguage: language,
+      source: "local",
+      // Sem nomes digitados, a IA sugere o elenco ao abrir o livro (uma vez só).
+      ...(characters.length > 0 ? { characters } : {}),
+    };
+    setSaving(true);
+    try {
+      await saveLocalBook(book, parsed.text);
+      setBooks((prev) => [book, ...prev]);
+      setSaving(false);
+      close();
+      onOpen(book);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível guardar o livro.");
+      setSaving(false);
+    }
+  }
+
+  async function remove(b: Ebook) {
+    if (!window.confirm(`Remover “${b.title}” deste aparelho? O progresso de leitura também será apagado.`)) {
+      return;
+    }
+    await deleteLocalBook(b.gutenbergId).catch(() => undefined);
+    removeProgress(b.gutenbergId);
+    forgetCast(b.id);
+    setBooks((prev) => prev.filter((x) => x.gutenbergId !== b.gutenbergId));
+    onRemoved();
+  }
+
+  return (
+    <section className="shelf my-books" id="meus-livros">
+      <div className="shelf-head">
+        <h2>Seus livros</h2>
+        <p>Tem o arquivo de um livro? Importe e converse com os personagens.</p>
+      </div>
+
+      <div className="result-grid">
+        <button type="button" className="result" onClick={() => setOpen(true)}>
+          <div className="cover import-cover" aria-hidden="true">
+            <span className="import-plus">+</span>
+            <span className="import-formats">EPUB · PDF · TXT</span>
+          </div>
+          <strong>Importar meu livro</strong>
+          <span>Fica só neste aparelho</span>
+        </button>
+        {books.map((b) => (
+          <div key={b.gutenbergId} className="my-book">
+            <button type="button" className="result" onClick={() => onOpen(b)}>
+              <BookCover book={b} />
+              <strong>{b.title}</strong>
+              <span>{b.author}</span>
+            </button>
+            <button type="button" className="link-btn my-book-remove" onClick={() => void remove(b)}>
+              Remover
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {open ? (
+        <div className="import-overlay" onClick={close}>
+          <form
+            className="import-panel"
+            onSubmit={onSubmit}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="import-title"
+          >
+            <div className="import-head">
+              <h3 id="import-title">Importar meu livro</h3>
+              <button type="button" className="icon-btn" onClick={close} aria-label="Fechar">
+                {Icon.close}
+              </button>
+            </div>
+
+            <label className={`file-drop ${parsed ? "is-ready" : ""}`}>
+              <input type="file" accept={ACCEPTED_EXTENSIONS} onChange={onFile} disabled={parsing || saving} />
+              <strong>
+                {parsing ? "Lendo o arquivo…" : fileName || "Escolher arquivo"}
+              </strong>
+              <span>
+                {parsed
+                  ? `${chapterCount} ${chapterCount === 1 ? "parte encontrada" : "partes encontradas"} · toque para trocar`
+                  : ".epub, .pdf ou .txt"}
+              </span>
+            </label>
+
+            {parsed ? (
+              <>
+                <label className="field">
+                  <span>Título</span>
+                  <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} required />
+                </label>
+                <label className="field">
+                  <span>Autor</span>
+                  <input value={author} onChange={(e) => setAuthor(e.target.value)} maxLength={120} />
+                </label>
+                <label className="field">
+                  <span>Idioma do texto</span>
+                  <select value={language} onChange={(e) => setLanguage(e.target.value as "pt" | "en")}>
+                    <option value="pt">Português</option>
+                    <option value="en">Inglês (dá para traduzir na leitura)</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Personagens para conversar (opcional)</span>
+                  <textarea
+                    value={castText}
+                    onChange={(e) => setCastText(e.target.value)}
+                    rows={3}
+                    maxLength={600}
+                    placeholder={"Um por linha, por exemplo:\nBella Swan\nEdward Cullen — vampiro de 104 anos"}
+                  />
+                  <small>Em branco, a IA escolhe os personagens principais quando você abrir o livro.</small>
+                </label>
+              </>
+            ) : null}
+
+            {error ? <p className="import-error" role="alert">{error}</p> : null}
+
+            <p className="import-note">
+              O arquivo é lido no seu navegador e não é enviado para lugar nenhum. Livros com proteção
+              contra cópia (DRM), como os comprados no Kindle, não abrem.
+            </p>
+
+            <div className="import-actions">
+              <button type="button" className="btn" onClick={close} disabled={saving}>
+                Cancelar
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={!parsed || saving}>
+                {saving ? "Guardando…" : "Importar e ler"}
+              </button>
+            </div>
+          </form>
         </div>
       ) : null}
     </section>
@@ -417,6 +649,8 @@ export function App() {
   const [chatOpen, setChatOpen] = useState(false);
 
   const [prefs, setPrefs] = useState(loadPrefs);
+  /** Redesenha a página inicial quando um livro importado é removido (sai de "Continue lendo"). */
+  const [, setHomeTick] = useState(0);
   useEffect(() => {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -451,16 +685,23 @@ export function App() {
     setScrollRatio(0);
     midChapterNudgeSentRef.current = {};
 
-    fetchBookText(book.gutenbergId)
+    (isLocalBook(book) ? loadLocalBookText(book.gutenbergId) : fetchBookText(book.gutenbergId))
       .then((text) => {
         if (cancelled) return;
         const saved = loadProgress(book.gutenbergId);
-        const chapterCount = splitIntoChapters(text).length;
-        if (saved && saved.chapterIndex < chapterCount) {
-          setChapterIndex(saved.chapterIndex);
+        const labels = splitIntoChapters(text).map((c) => c.label);
+        // Procura pelo nome do capítulo: se a divisão em capítulos mudar numa versão nova do app,
+        // o número salvo pode apontar para outro capítulo.
+        const savedIndex = !saved
+          ? -1
+          : labels[saved.chapterIndex] === saved.chapterLabel
+            ? saved.chapterIndex
+            : labels.indexOf(saved.chapterLabel);
+        if (saved && savedIndex >= 0) {
+          setChapterIndex(savedIndex);
           restoreScrollRef.current = saved.scrollRatio;
           // Quem volta para o meio do capítulo não precisa da dica de “meio de capítulo”.
-          if (saved.scrollRatio >= 0.42) midChapterNudgeSentRef.current[saved.chapterIndex] = true;
+          if (saved.scrollRatio >= 0.42) midChapterNudgeSentRef.current[savedIndex] = true;
         }
         setFullText(text);
         setLoadState("ready");
@@ -942,6 +1183,8 @@ export function App() {
           );
         })}
 
+        <MyBooks onOpen={startBook} onRemoved={() => setHomeTick((n) => n + 1)} />
+
         <Explore onOpen={startBook} />
 
         <footer className="home-foot">
@@ -1070,7 +1313,7 @@ export function App() {
           {loadState === "loading" ? (
             <div className="page-status">
               <span className="spinner" aria-hidden="true" />
-              Buscando o livro no acervo…
+              {isLocalBook(book) ? "Abrindo o seu livro…" : "Buscando o livro no acervo…"}
             </div>
           ) : null}
 
@@ -1151,14 +1394,18 @@ export function App() {
                 ) : (
                   <p className="the-end">Fim — mas a conversa continua ao lado.</p>
                 )}
-                <a
-                  className="source-link"
-                  href={`https://www.gutenberg.org/ebooks/${book.gutenbergId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Ver esta obra no Project Gutenberg ↗
-                </a>
+                {isLocalBook(book) ? (
+                  <span className="source-link">Livro importado · guardado só neste aparelho</span>
+                ) : (
+                  <a
+                    className="source-link"
+                    href={`https://www.gutenberg.org/ebooks/${book.gutenbergId}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Ver esta obra no Project Gutenberg ↗
+                  </a>
+                )}
               </footer>
             </article>
           ) : null}

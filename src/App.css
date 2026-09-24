@@ -1623,3 +1623,219 @@
     animation-duration: 3s;
   }
 }
+
+/* ---- Seus livros (importados pelo leitor) ---- */
+
+.my-books {
+  margin-top: 4.5rem;
+  /* .icon-btn e .link-btn usam as cores do leitor; aqui valem as da página inicial. */
+  --r-border: var(--border-strong);
+  --r-chip: rgba(255, 255, 255, 0.05);
+  --r-text: var(--text);
+  --r-accent: var(--accent);
+}
+
+.import-cover {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgba(255, 248, 235, 0.03);
+  border: 1.5px dashed var(--accent-dim);
+  box-shadow: none;
+}
+
+.import-cover::before,
+.import-cover::after {
+  display: none;
+}
+
+.import-plus {
+  font-size: 2.4rem;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.import-formats {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.my-book {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.my-book-remove {
+  align-self: flex-start;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.import-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(8, 6, 4, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.import-panel {
+  width: min(100%, 520px);
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.4rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-elevated);
+}
+
+.import-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.import-head h3 {
+  margin: 0;
+  font-family: var(--font-read);
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+.file-drop {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1.4rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1.5px dashed var(--accent-dim);
+  background: rgba(255, 248, 235, 0.03);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.file-drop:hover,
+.file-drop:focus-within {
+  border-color: var(--accent);
+  background: rgba(228, 184, 106, 0.06);
+}
+
+.file-drop.is-ready {
+  border-style: solid;
+  border-color: var(--accent-2-dim);
+}
+
+.file-drop input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.file-drop strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.95rem;
+}
+
+.file-drop span {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.file-drop.is-ready span {
+  color: var(--accent-2);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.field > span {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 248, 235, 0.04);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+}
+
+.field textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.field select option {
+  background: var(--bg);
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px rgba(228, 184, 106, 0.12);
+}
+
+.field small {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.import-error {
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(232, 168, 168, 0.1);
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.import-note {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.explore-note a {
+  color: var(--accent-2);
+}
