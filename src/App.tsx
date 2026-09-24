@@ -3,9 +3,7 @@ import { featuredBooks, suggestedBooks } from "./data/ebooks";
 import type { Ebook, StoryCharacter } from "./data/types";
 import {
   characterReply,
-  detectProvider,
   providerDisplayLabel,
-  translateParagraphs,
   USER_MESSAGE_MAX_CHARS,
   type ChatTurn,
 } from "./lib/ai";
@@ -15,7 +13,15 @@ import { fetchBookText, searchBooks, type SearchLanguage } from "./lib/gutenberg
 import { loadProgress, progressPct, recentProgress, saveProgress, type ReadingProgress } from "./lib/progress";
 import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
 import { excerptNearScrollRatio } from "./lib/readingContext";
-import { cachedTranslation, chunkRanges, storeTranslation } from "./lib/translate";
+import {
+  cachedTranslation,
+  chunkRanges,
+  detectTranslationEngine,
+  storeTranslation,
+  translateParagraphs,
+  warmUpLocalTranslator,
+  type TranslationEngine,
+} from "./lib/translate";
 import "./App.css";
 
 type Msg = { id: string; role: "user" | "assistant"; text: string };
@@ -640,7 +646,15 @@ export function App() {
   );
 
   /* ---- Tradução dos livros em inglês: trecho a trecho, conforme o leitor avança. ---- */
-  const canTranslate = book?.textLanguage === "en" && detectProvider() === "live";
+  const [engine, setEngine] = useState<TranslationEngine>("google");
+  useEffect(() => {
+    let alive = true;
+    void detectTranslationEngine().then((e) => alive && setEngine(e));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const canTranslate = book?.textLanguage === "en";
   const translateOn = canTranslate && prefs.translate;
   const chunks = useMemo(() => chunkRanges(blocks.map((b) => b.text)), [blocks]);
   const [translated, setTranslated] = useState<{
@@ -676,22 +690,27 @@ export function App() {
     if (c === undefined) return;
     const key = chapterKey;
     const [start, end] = chunks[c];
-    setTranslatingChunk(c);
-    translateParagraphs(blocks.slice(start, end).map((b) => b.text))
-      .then((result) => {
-        storeTranslation(book.gutenbergId, chapterIndex, c, result);
-        if (chapterKeyRef.current === key) {
-          setTranslated((prev) => ({ key, byChunk: { ...prev.byChunk, [c]: result } }));
-        }
-      })
-      .catch((err) => {
-        console.warn("Falha na tradução:", err);
-        if (chapterKeyRef.current === key) setFailedChunks((prev) => [...prev, c]);
-      })
-      .finally(() => {
-        if (chapterKeyRef.current === key) setTranslatingChunk(null);
-      });
+    // Espera a rolagem parar: quem passa correndo pelo capítulo não dispara um pedido por trecho.
+    const t = setTimeout(() => {
+      setTranslatingChunk(c);
+      translateParagraphs(engine, blocks.slice(start, end).map((b) => b.text))
+        .then((result) => {
+          storeTranslation(book.gutenbergId, chapterIndex, c, result);
+          if (chapterKeyRef.current === key) {
+            setTranslated((prev) => ({ key, byChunk: { ...prev.byChunk, [c]: result } }));
+          }
+        })
+        .catch((err) => {
+          console.warn("Falha na tradução:", err);
+          if (chapterKeyRef.current === key) setFailedChunks((prev) => [...prev, c]);
+        })
+        .finally(() => {
+          if (chapterKeyRef.current === key) setTranslatingChunk(null);
+        });
+    }, 700);
+    return () => clearTimeout(t);
   }, [
+    engine,
     book,
     translateOn,
     loadState,
@@ -999,7 +1018,10 @@ export function App() {
             <button
               type="button"
               className={`icon-btn text-btn translate-btn ${prefs.translate ? "is-active" : ""}`}
-              onClick={() => setPrefs((p) => ({ ...p, translate: !p.translate }))}
+              onClick={() => {
+                if (!prefs.translate && engine === "local") warmUpLocalTranslator();
+                setPrefs((p) => ({ ...p, translate: !p.translate }));
+              }}
               aria-pressed={prefs.translate}
               aria-label={prefs.translate ? "Ver o texto original em inglês" : "Traduzir para o português"}
               title={prefs.translate ? "Ver o original em inglês" : "Traduzir para o português"}
@@ -1080,14 +1102,21 @@ export function App() {
                   {failedChunks.length > 0 ? (
                     <>
                       Parte deste capítulo não pôde ser traduzida agora.{" "}
-                      <button type="button" className="link-btn" onClick={() => setFailedChunks([])}>
+                      <button
+                        type="button"
+                        className="link-btn"
+                        onClick={() => {
+                          if (engine === "local") warmUpLocalTranslator();
+                          setFailedChunks([]);
+                        }}
+                      >
                         Tentar de novo
                       </button>
                     </>
                   ) : translatingChunk !== null && !translations[visibleChunk?.chunk ?? 0] ? (
                     "Traduzindo este trecho…"
                   ) : (
-                    "Tradução automática feita por IA. Pode conter imprecisões."
+                    "Tradução automática. Pode conter imprecisões."
                   )}
                 </div>
               ) : null}

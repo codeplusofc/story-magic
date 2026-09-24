@@ -147,6 +147,7 @@ O `vercel.json` redireciona `/gutenberg/*` para o gutenberg.org e `/gutenberg-mi
 - **Cotas gratuitas:** no Groq, cada modelo aceita cerca de 1.000 mensagens por dia e 8.000 tokens por minuto. Com três modelos, isso dá cerca de 3.000 mensagens por dia e uns 12 envios por minuto no total.
 - **O Gutendex é lento** para buscas grandes: em todos os idiomas, pode levar até um minuto. O filtro Português responde em cerca de 1 segundo. As sugestões do acervo ficam prontas no app por esse motivo.
 - **Pouco terror em português:** o Gutenberg não tem traduções de livros de vampiro ou terror em português (as traduções modernas têm direitos autorais). A seção de terror usa o texto em inglês, com o chat em português.
+- **Tradução dos livros em inglês:** não usa IA nem chave. No Chrome e no Edge de desktop, usa o tradutor embutido do navegador. Nos outros navegadores e no celular, usa o Google Tradutor público (não oficial: pode limitar ou mudar sem aviso) e, se ele recusar, o MyMemory, que libera só ~5 mil caracteres por dia para cada leitor. A qualidade é de tradutor automático.
 - **Só Project Gutenberg por enquanto:** histórias próprias ou de autores parceiros ainda não são suportadas.
 
 ## Próximos passos
