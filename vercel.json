@@ -3,6 +3,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
+    { "source": "/gutenberg-search", "destination": "https://www.gutenberg.org/ebooks/search.opds/" },
     { "source": "/gutenberg/:path*", "destination": "https://www.gutenberg.org/:path*" },
     { "source": "/gutenberg-mirror/:path*", "destination": "https://aleph.pglaf.org/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }

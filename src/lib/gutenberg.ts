@@ -13,10 +13,11 @@ export type SearchLanguage = "all" | "pt" | "en";
 export type SearchPage = { books: Ebook[]; total: number | null; next: string | null };
 
 /**
- * Busca do próprio gutenberg.org (feed OPDS), pelo mesmo proxy dos textos. Responde em ~2 s;
- * o Gutendex, usado antes, levava de 30 s a mais de um minuto.
+ * Busca do próprio gutenberg.org (feed OPDS). Responde em ~2 s; o Gutendex, usado antes, levava
+ * de 30 s a mais de um minuto. Tem rota própria no proxy porque o gutenberg.org exige a barra
+ * final em "search.opds/", e o Vercel remove essa barra dos caminhos (a busca voltava 403).
  */
-const SEARCH_URL = `${TEXT_SOURCES[0]}/ebooks/search.opds/`;
+const SEARCH_URL = "/gutenberg-search";
 
 /** Livros fora do inglês vêm com o idioma no fim do título: "Dom Casmurro (Portuguese)". */
 const LANGUAGE_SUFFIX = /\s*\(([A-Z][a-z]+)\)$/;
@@ -56,7 +57,9 @@ function parseFeed(xml: string, language: SearchLanguage): { books: Ebook[]; nex
   const nextHref = Array.from(doc.getElementsByTagName("link"))
     .find((l) => l.getAttribute("rel") === "next")
     ?.getAttribute("href");
-  return { books, next: nextHref ? `${TEXT_SOURCES[0]}${nextHref.replace(/&amp;/g, "&")}` : null };
+  // Só a parte depois do "?" interessa: a página seguinte passa pela mesma rota de busca.
+  const nextQuery = nextHref?.replace(/&amp;/g, "&").split("?")[1];
+  return { books, next: nextQuery ? `${SEARCH_URL}?${nextQuery}` : null };
 }
 
 /** A busca costuma responder em ~2 s; às vezes uma chamada trava ou falha, e a segunda passa. */
