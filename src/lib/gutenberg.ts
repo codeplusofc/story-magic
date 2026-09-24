@@ -1,8 +1,5 @@
 import type { Ebook } from "../data/types";
 
-/** Catálogo do Project Gutenberg (permite acesso direto do navegador). */
-const GUTENDEX = "https://gutendex.com/books/";
-
 /**
  * Os .txt do gutenberg.org não liberam CORS, então passam pelo proxy do próprio site:
  * `vite.config.ts` (dev/preview) e `vercel.json` (produção) redirecionam `/gutenberg/*`
@@ -12,46 +9,79 @@ const TEXT_SOURCES = ["/gutenberg", "/gutenberg-mirror"];
 
 export type SearchLanguage = "all" | "pt" | "en";
 
-type GutendexBook = {
-  id: number;
-  title: string;
-  authors: { name: string }[];
-  languages: string[];
-  bookshelves: string[];
-  formats: Record<string, string>;
-};
+/** `total` só vem quando a busca cabe numa página (o catálogo não informa o total). */
+export type SearchPage = { books: Ebook[]; total: number | null; next: string | null };
 
-type GutendexPage = { count: number; next: string | null; results: GutendexBook[] };
+/**
+ * Busca do próprio gutenberg.org (feed OPDS), pelo mesmo proxy dos textos. Responde em ~2 s;
+ * o Gutendex, usado antes, levava de 30 s a mais de um minuto.
+ */
+const SEARCH_URL = `${TEXT_SOURCES[0]}/ebooks/search.opds/`;
 
-export type SearchPage = { books: Ebook[]; total: number; next: string | null };
+/** Livros fora do inglês vêm com o idioma no fim do título: "Dom Casmurro (Portuguese)". */
+const LANGUAGE_SUFFIX = /\s*\(([A-Z][a-z]+)\)$/;
 
-/** "Doyle, Arthur Conan" → "Arthur Conan Doyle"; remove datas e parênteses. */
-function formatAuthor(raw: string): string {
-  const clean = raw.replace(/\s*\(.*?\)\s*/g, " ").trim();
-  const [last, first] = clean.split(",").map((s) => s.trim());
-  return first ? `${first} ${last}` : last;
-}
-
-/** Tira subtítulos técnicos do catálogo ("Peter Pan : $b [Peter and Wendy]"). */
+/** Remove marcações do catálogo ("Peter Pan : $b [Peter and Wendy]", "Título :  Subtítulo"). */
 function formatTitle(raw: string): string {
-  return raw.replace(/\s*:\s*\$b.*$/, "").replace(/\s*\[.*?\]\s*/g, " ").trim();
+  return raw
+    .replace(/\s*:\s*\$b.*$/, "")
+    .replace(/\s*\[.*?\]\s*/g, " ")
+    .replace(/\s+:\s+/g, ": ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function toEbook(b: GutendexBook): Ebook {
-  const lang = b.languages.includes("pt") ? "pt" : "en";
-  const shelf = b.bookshelves.find((s) => s.startsWith("Category: "))?.replace("Category: ", "");
-  return {
-    id: `gb-${b.id}`,
-    gutenbergId: b.id,
-    title: formatTitle(b.title),
-    author: b.authors[0] ? formatAuthor(b.authors[0].name) : "Autor desconhecido",
-    genre: shelf,
-    coverUrl: b.formats["image/jpeg"] ? coverUrlFor(b.id) : undefined,
-    textLanguage: lang,
-  };
+function parseFeed(xml: string, language: SearchLanguage): { books: Ebook[]; next: string | null } {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const books: Ebook[] = [];
+  for (const entry of Array.from(doc.getElementsByTagName("entry"))) {
+    // Entradas de "Authors", "Subjects" e "Bookshelves" não são livros.
+    const id = Number(entry.getElementsByTagName("id")[0]?.textContent?.match(/\/ebooks\/(\d+)\.opds$/)?.[1]);
+    if (!id) continue;
+    const rawTitle = entry.getElementsByTagName("title")[0]?.textContent?.trim() ?? "";
+    const suffix = rawTitle.match(LANGUAGE_SUFFIX)?.[1];
+    const lang = suffix === "Portuguese" ? "pt" : suffix ? null : "en";
+    if (!lang || (language !== "all" && lang !== language)) continue;
+    // Sem autor, o catálogo põe o número de downloads no lugar ("65509 downloads").
+    const author = entry.getElementsByTagName("content")[0]?.textContent?.trim() ?? "";
+    books.push({
+      id: `gb-${id}`,
+      gutenbergId: id,
+      title: formatTitle(rawTitle.replace(LANGUAGE_SUFFIX, "")),
+      author: /^[\d.,]+ downloads$/.test(author) || !author ? "Autor desconhecido" : author,
+      coverUrl: coverUrlFor(id),
+      textLanguage: lang,
+    });
+  }
+  const nextHref = Array.from(doc.getElementsByTagName("link"))
+    .find((l) => l.getAttribute("rel") === "next")
+    ?.getAttribute("href");
+  return { books, next: nextHref ? `${TEXT_SOURCES[0]}${nextHref.replace(/&amp;/g, "&")}` : null };
 }
 
-/** O Gutendex pode levar dezenas de segundos: cada busca feita fica guardada na sessão. */
+/** A busca costuma responder em ~2 s; às vezes uma chamada trava ou falha, e a segunda passa. */
+const SEARCH_TIMEOUT_MS = 12_000;
+const SEARCH_ATTEMPTS = 2;
+
+async function fetchFeed(url: string): Promise<string> {
+  for (let attempt = 1; attempt <= SEARCH_ATTEMPTS; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      const body = res.ok ? await res.text() : "";
+      if (body.includes("<feed")) return body;
+      console.warn("Busca no Gutenberg falhou:", res.status);
+    } catch (e) {
+      console.warn("Busca no Gutenberg falhou:", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error("Não foi possível buscar livros agora. Tente de novo em instantes.");
+}
+
+/** Cada busca feita fica guardada na sessão. */
 const searchCache = new Map<string, SearchPage>();
 
 export async function searchBooks(
@@ -63,19 +93,17 @@ export async function searchBooks(
   if (pageUrl) {
     url = pageUrl;
   } else {
-    const u = new URL(GUTENDEX);
-    u.searchParams.set("languages", language === "all" ? "pt,en" : language);
-    u.searchParams.set("mime_type", "text/plain");
-    if (query.trim()) u.searchParams.set("search", query.trim());
-    url = u.toString();
+    // "l.pt" / "l.en" filtram o idioma na própria busca do Gutenberg.
+    const filter = language === "all" ? "" : ` l.${language}`;
+    url = `${SEARCH_URL}?${new URLSearchParams({ query: query.trim() + filter })}`;
   }
-  const cached = searchCache.get(url);
+  const cacheKey = `${language}|${url}`;
+  const cached = searchCache.get(cacheKey);
   if (cached) return cached;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Não foi possível buscar livros agora. Tente de novo em instantes.");
-  const data = (await res.json()) as GutendexPage;
-  const page = { books: data.results.map(toEbook), total: data.count, next: data.next };
-  searchCache.set(url, page);
+  const body = await fetchFeed(url);
+  const { books, next } = parseFeed(body, language);
+  const page = { books, next, total: next || pageUrl ? null : books.length };
+  searchCache.set(cacheKey, page);
   return page;
 }
 

@@ -30,7 +30,7 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
 | Interface | React 18 + TypeScript |
 | Build e servidor de desenvolvimento | Vite 5 |
 | Hospedagem | Vercel (site estático + rewrites) |
-| Catálogo de livros | [Gutendex](https://gutendex.com), a API do Project Gutenberg |
+| Catálogo de livros | Busca do próprio [gutenberg.org](https://www.gutenberg.org) (feed OPDS), pelo mesmo proxy dos textos |
 | Texto dos livros | Project Gutenberg, via proxy (`/gutenberg` e `/gutenberg-mirror`) |
 | IA principal | [Groq](https://console.groq.com) (`openai/gpt-oss-120b`, `gpt-oss-20b`, `qwen3.8-27b`) |
 | IA de reserva | [Google Gemini](https://aistudio.google.com) (`gemini-3.5-flash-lite`, `gemini-flash-lite-latest`) |
@@ -49,7 +49,7 @@ src/
 │   ├── types.ts            Tipos: Ebook, StoryCharacter, HeroDemo
 │   └── ebooks.ts           Curadoria: livros em destaque, personagens e sugestões do acervo
 └── lib/
-    ├── gutenberg.ts        Busca no Gutendex, download e limpeza do texto, capas
+    ├── gutenberg.ts        Busca no catálogo do Gutenberg, download e limpeza do texto, capas
     ├── chapters.ts         Divisão do texto em capítulos
     ├── ai.ts               Chat, cadeia de provedores de IA e geração de personagens
     ├── cast.ts             Elenco do livro (escrito à mão, em cache ou gerado pela IA)
@@ -145,7 +145,7 @@ O `vercel.json` redireciona `/gutenberg/*` para o gutenberg.org e `/gutenberg-mi
 
 - **As chaves de IA ficam visíveis no navegador.** O prefixo `VITE_` inclui os valores no JavaScript do site. Antes de abrir para o público, o ideal é mover as chamadas para uma função serverless no Vercel, com a chave privada e limite de mensagens por usuário.
 - **Cotas gratuitas:** no Groq, cada modelo aceita cerca de 1.000 mensagens por dia e 8.000 tokens por minuto. Com três modelos, isso dá cerca de 3.000 mensagens por dia e uns 12 envios por minuto no total.
-- **O Gutendex é lento** para buscas grandes: em todos os idiomas, pode levar até um minuto. O filtro Português responde em cerca de 1 segundo. As sugestões do acervo ficam prontas no app por esse motivo.
+- **Busca do Gutenberg:** responde em cerca de 2 segundos, mas a relevância é a do próprio site ("poe" também encontra livros de poemas) e o total de resultados só aparece quando cabe numa página.
 - **Pouco terror em português:** o Gutenberg não tem traduções de livros de vampiro ou terror em português (as traduções modernas têm direitos autorais). A seção de terror usa o texto em inglês, com o chat em português.
 - **Tradução dos livros em inglês:** não usa IA nem chave. No Chrome e no Edge de desktop, usa o tradutor embutido do navegador. Nos outros navegadores e no celular, usa o Google Tradutor público (não oficial: pode limitar ou mudar sem aviso) e, se ele recusar, o MyMemory, que libera só ~5 mil caracteres por dia para cada leitor. A qualidade é de tradutor automático.
 - **Só Project Gutenberg por enquanto:** histórias próprias ou de autores parceiros ainda não são suportadas.

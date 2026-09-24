@@ -225,7 +225,7 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
   const [query, setQuery] = useState("");
   const [language, setLanguage] = useState<SearchLanguage>("pt");
   const [books, setBooks] = useState<Ebook[]>([]);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
   const [next, setNext] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [slow, setSlow] = useState(false);
@@ -316,17 +316,15 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
         <p className="explore-note">Não foi possível buscar livros agora. Tente de novo em instantes.</p>
       ) : status === "loading" ? (
         <p className="explore-note">
-          {slow
-            ? language === "pt"
-              ? "Procurando no acervo… quase lá."
-              : "O acervo é enorme e a busca pode levar até um minuto. Dica: o filtro Português responde bem mais rápido."
-            : "Procurando no acervo…"}
+          {slow ? "O acervo está demorando mais que o normal… quase lá." : "Procurando no acervo…"}
         </p>
       ) : status === "ready" && books.length === 0 ? (
         <p className="explore-note">Nenhum livro encontrado para “{term}”.</p>
       ) : (
         <p className="explore-note">
-          {total.toLocaleString("pt-BR")} {total === 1 ? "livro" : "livros"} para “{term}”
+          {total === null
+            ? `Livros para “${term}”`
+            : `${total.toLocaleString("pt-BR")} ${total === 1 ? "livro" : "livros"} para “${term}”`}
         </p>
       )}
 

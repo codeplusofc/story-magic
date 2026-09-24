@@ -642,7 +642,7 @@ export const featuredBooks: Ebook[] = [
 ];
 
 /**
- * Sugestões do acervo quando a busca está vazia (o Gutendex é lento para listar tudo).
+ * Sugestões do acervo quando a busca está vazia (sem termo de busca, o catálogo não tem uma lista curta de destaques).
  * Só o número do livro no Gutenberg e o título; os personagens a IA sugere ao abrir.
  */
 const SUGGESTIONS: [id: number, title: string, author: string, lang: "pt" | "en"][] = [
