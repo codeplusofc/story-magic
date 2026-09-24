@@ -12,7 +12,31 @@ export type ImportedBook = {
   title: string;
   author: string;
   language: "pt" | "en";
+  /** Capa reduzida (JPEG em data URL, ~15 KB): imagem do EPUB ou 1ª página do PDF. */
+  cover?: string;
 };
+
+type Parsed = { text: string; title?: string; author?: string; cover?: string };
+
+/** Largura da capa guardada: basta para a estante e mantém o armazenamento pequeno. */
+const COVER_WIDTH = 240;
+
+/** Reduz uma imagem (ou canvas) para a capa guardada no navegador. */
+async function shrinkCover(source: Blob | HTMLCanvasElement): Promise<string | undefined> {
+  try {
+    const img = source instanceof Blob ? await createImageBitmap(source) : source;
+    const scale = Math.min(1, COVER_WIDTH / img.width);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+    // Imagem muito "baixa" (faixa, logotipo) não serve de capa.
+    if (canvas.height < canvas.width * 0.9) return undefined;
+    return canvas.toDataURL("image/jpeg", 0.8);
+  } catch {
+    return undefined;
+  }
+}
 
 export const ACCEPTED_EXTENSIONS = ".txt,.epub,.pdf";
 /** Livros grandes em PDF passam fácil de 20 MB; acima disso o celular sofre para processar. */
@@ -26,9 +50,9 @@ export async function importBookFile(file: File): Promise<ImportedBook> {
   const fallbackTitle = titleFromFileName(file.name);
   const buf = new Uint8Array(await file.arrayBuffer());
 
-  let result: { text: string; title?: string; author?: string };
+  let result: Parsed;
   if (ext === "txt") result = { text: parseTxt(buf) };
-  else if (ext === "epub") result = parseEpub(buf);
+  else if (ext === "epub") result = await parseEpub(buf);
   else if (ext === "pdf") result = await parsePdf(buf);
   else throw new Error("Formato não suportado. Use um arquivo .txt, .epub ou .pdf.");
 
@@ -39,6 +63,7 @@ export async function importBookFile(file: File): Promise<ImportedBook> {
     title: result.title?.trim() || fallbackTitle,
     author: result.author?.trim() || "",
     language: detectLanguage(text),
+    cover: result.cover,
   };
 }
 
@@ -150,7 +175,7 @@ function chapterSubtitle(title: string): string {
   return t.length > 70 ? `${t.slice(0, 67)}…` : t;
 }
 
-function parseEpub(buf: Uint8Array): { text: string; title?: string; author?: string } {
+async function parseEpub(buf: Uint8Array): Promise<Parsed> {
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(buf);
@@ -173,13 +198,26 @@ function parseEpub(buf: Uint8Array): { text: string; title?: string; author?: st
   const base = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/")) : "";
 
   const meta = (tag: string) => opf.getElementsByTagNameNS("*", tag)[0]?.textContent?.trim() ?? "";
-  const manifest = new Map<string, { href: string; props: string }>();
+  const manifest = new Map<string, { href: string; props: string; type: string }>();
   for (const item of Array.from(opf.getElementsByTagNameNS("*", "item"))) {
     manifest.set(item.getAttribute("id") ?? "", {
       href: item.getAttribute("href") ?? "",
       props: item.getAttribute("properties") ?? "",
+      type: item.getAttribute("media-type") ?? "",
     });
   }
+
+  // Capa: EPUB 3 marca com properties="cover-image"; EPUB 2 com <meta name="cover" content="id">.
+  const coverMetaId = Array.from(opf.getElementsByTagNameNS("*", "meta"))
+    .find((m) => m.getAttribute("name") === "cover")
+    ?.getAttribute("content");
+  const images = [...manifest.entries()].filter(([, it]) => it.type.startsWith("image/"));
+  const coverItem =
+    images.find(([, it]) => it.props.includes("cover-image"))?.[1] ??
+    (coverMetaId ? manifest.get(coverMetaId) : undefined) ??
+    images.find(([id, it]) => /cover|capa/i.test(id) || /cover|capa/i.test(it.href))?.[1];
+  const coverBytes = coverItem ? files[resolvePath(base, decodeURIComponent(coverItem.href))] : undefined;
+  const cover = coverBytes ? await shrinkCover(new Blob([coverBytes], { type: coverItem!.type })) : undefined;
 
   const out: string[] = [];
   let chapter = 0;
@@ -210,14 +248,14 @@ function parseEpub(buf: Uint8Array): { text: string; title?: string; author?: st
     }
   }
 
-  return { text: out.join("\n\n"), title: meta("title"), author: meta("creator") };
+  return { text: out.join("\n\n"), title: meta("title"), author: meta("creator"), cover };
 }
 
 /* ------------------------------- PDF ------------------------------- */
 
 type PdfLine = { text: string; x: number; y: number; h: number; w: number };
 
-async function parsePdf(buf: Uint8Array): Promise<{ text: string; title?: string; author?: string }> {
+async function parsePdf(buf: Uint8Array): Promise<Parsed> {
   // pdf.js tem ~1 MB: só é baixado quando alguém importa um PDF. O build "legacy" funciona em
   // celulares com navegador mais antigo.
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -269,11 +307,26 @@ async function parsePdf(buf: Uint8Array): Promise<{ text: string; title?: string
     );
   }
 
+  // Capa: a primeira página, desenhada pequena.
+  let cover: string | undefined;
+  try {
+    const first = await doc.getPage(1);
+    const base = first.getViewport({ scale: 1 });
+    const viewport = first.getViewport({ scale: (COVER_WIDTH * 2) / base.width });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    await first.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
+    cover = await shrinkCover(canvas);
+  } catch {
+    // Sem capa: a estante desenha uma capa tipográfica.
+  }
+
   const meta = await doc.getMetadata().catch(() => null);
   const info = (meta?.info ?? {}) as { Title?: string; Author?: string };
   await doc.destroy();
 
-  return { text: pdfLinesToText(pages), title: info.Title, author: info.Author };
+  return { text: pdfLinesToText(pages), title: info.Title, author: info.Author, cover };
 }
 
 function median(values: number[]): number {

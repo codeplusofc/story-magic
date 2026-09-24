@@ -3,11 +3,22 @@ import { featuredBooks, suggestedBooks } from "./data/ebooks";
 import type { Ebook, StoryCharacter } from "./data/types";
 import {
   characterReply,
+  detectProvider,
   providerDisplayLabel,
   USER_MESSAGE_MAX_CHARS,
   type ChatTurn,
 } from "./lib/ai";
 import { castFromNames, forgetCast, loadCast } from "./lib/cast";
+import { forgetChat, loadChat, saveChat } from "./lib/chatHistory";
+import { lookupWord, normalizeWord, type WordInfo } from "./lib/dictionary";
+import {
+  forgetHighlights,
+  loadHighlights,
+  MAX_HIGHLIGHT_CHARS,
+  saveHighlights,
+  splitByHighlights,
+  type Highlight,
+} from "./lib/highlights";
 import { splitIntoChapters } from "./lib/chapters";
 import { fetchBookText, searchBooks, type SearchLanguage } from "./lib/gutenberg";
 import { ACCEPTED_EXTENSIONS, importBookFile, type ImportedBook } from "./lib/importBook";
@@ -30,6 +41,17 @@ import {
 import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
 import { searchOutsideCatalog, type BookHint } from "./lib/openLibrary";
 import { excerptNearScrollRatio } from "./lib/readingContext";
+import {
+  addReadingSeconds,
+  GOAL_OPTIONS,
+  hasAnyReading,
+  readingSummary,
+  setReadingGoalMinutes,
+} from "./lib/readingStats";
+import { useInstallPrompt } from "./lib/pwa";
+import { renderShareCard, shareOrDownload, type ShareCardInput } from "./lib/shareCard";
+import { speakParagraphs, speechSupported, type SpeechSession } from "./lib/speech";
+import { countMessage, DAILY_MESSAGE_LIMIT, messagesLeftToday } from "./lib/usageLimit";
 import {
   cachedTranslation,
   chunkRanges,
@@ -89,6 +111,11 @@ function loadPrefs(): { theme: ReadingTheme; fontStep: number; translate: boolea
     // Sem armazenamento disponível: usa o padrão.
   }
   return { theme: "night", fontStep: 1, translate: false };
+}
+
+/** Toque (celular): o menu da seleção vai abaixo do trecho, longe do menu nativo do sistema. */
+function coarsePointer(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
 }
 
 function shortNameOf(c: StoryCharacter): string {
@@ -204,6 +231,44 @@ const Icon = {
   close: (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M18 6L6 18M6 6l12 12" />
+    </svg>
+  ),
+  speaker: (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M11 5L6 9H3v6h3l5 4V5z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />
+    </svg>
+  ),
+  stop: (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  ),
+  bookmark: (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 3h12v18l-6-4-6 4V3z" />
+    </svg>
+  ),
+  share: (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
+      <path d="M16 6l-4-4-4 4M12 2v13" />
+    </svg>
+  ),
+  highlight: (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 11l-6 6v3h3l6-6M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
+    </svg>
+  ),
+  book: (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14z" />
+      <path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5" />
+    </svg>
+  ),
+  refresh: (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.3L3 16M3 21v-5h5" />
     </svg>
   ),
   upload: (
@@ -539,7 +604,8 @@ function MyBooks({
       title: bookTitle,
       author: author.trim() || "Autor não informado",
       genre: "Meu livro",
-      ...(hint?.coverUrl ? { coverUrl: hint.coverUrl } : {}),
+      // Capa: a do catálogo (livro escolhido em "Fora do acervo") ou a que veio no arquivo.
+      ...((hint?.coverUrl ?? parsed.cover) ? { coverUrl: hint?.coverUrl ?? parsed.cover } : {}),
       textLanguage: language,
       source: "local",
       // Sem nomes digitados, a IA sugere o elenco ao abrir o livro (uma vez só).
@@ -565,6 +631,8 @@ function MyBooks({
     await deleteLocalBook(b.gutenbergId).catch(() => undefined);
     removeProgress(b.gutenbergId);
     forgetCast(b.id);
+    forgetChat(b.id);
+    forgetHighlights(b.id);
     setBooks((prev) => prev.filter((x) => x.gutenbergId !== b.gutenbergId));
     onRemoved();
   }
@@ -681,6 +749,75 @@ function MyBooks({
   );
 }
 
+/** Sequência de dias lendo, semana e meta diária de minutos. */
+function ReadingStreak() {
+  const [summary, setSummary] = useState(readingSummary);
+  const pct = Math.min(100, (summary.todayMinutes / summary.goalMinutes) * 100);
+  const goalDone = summary.todayMinutes >= summary.goalMinutes;
+  return (
+    <section className="streak" aria-label="Sua leitura">
+      <div className="streak-main">
+        <span className={`streak-flame ${summary.readToday ? "is-lit" : ""}`} aria-hidden="true">
+          🔥
+        </span>
+        <div>
+          <strong>
+            {summary.streak} {summary.streak === 1 ? "dia seguido" : "dias seguidos"}
+          </strong>
+          <span>
+            {summary.readToday
+              ? "Você já leu hoje. Continue assim!"
+              : summary.streak > 0
+                ? "Leia hoje para não perder a sequência."
+                : "Leia um pouco hoje para começar uma sequência."}
+          </span>
+        </div>
+      </div>
+
+      <ol className="streak-week" aria-label="Últimos 7 dias">
+        {summary.week.map((d, i) => (
+          <li
+            key={i}
+            className={[d.read ? "is-read" : "", d.today ? "is-today" : ""].filter(Boolean).join(" ") || undefined}
+            aria-label={`${d.today ? "Hoje" : d.label}: ${d.read ? "leu" : "não leu"}`}
+          >
+            {d.label}
+          </li>
+        ))}
+      </ol>
+
+      <div className="streak-goal">
+        <div className="streak-goal-text">
+          <span>Meta de hoje</span>
+          <strong>
+            {goalDone ? "Meta cumprida! " : ""}
+            {summary.todayMinutes} de {summary.goalMinutes} min
+          </strong>
+        </div>
+        <div className={`streak-bar ${goalDone ? "is-done" : ""}`} aria-hidden="true">
+          <span style={{ width: `${pct}%` }} />
+        </div>
+        <label className="streak-select">
+          Meta diária
+          <select
+            value={summary.goalMinutes}
+            onChange={(e) => {
+              setReadingGoalMinutes(Number(e.target.value));
+              setSummary(readingSummary());
+            }}
+          >
+            {GOAL_OPTIONS.map((m) => (
+              <option key={m} value={m}>
+                {m} min
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </section>
+  );
+}
+
 /** Quantos livros "Continue lendo" mostra antes de "Ver todos". */
 const CONTINUE_PREVIEW = 4;
 
@@ -747,11 +884,47 @@ export function App() {
   const [threads, setThreads] = useState<Record<string, Msg[]>>({});
   /** No celular o chat abre como painel por cima do texto. */
   const [chatOpen, setChatOpen] = useState(false);
+  const [messagesLeft, setMessagesLeft] = useState(messagesLeftToday);
+  /** Aviso curto no rodapé da tela ("Imagem salva", "Trecho destacado"). */
+  const [toast, setToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 2600);
+    return () => window.clearTimeout(t);
+  }, [toast]);
+
+  /* Marcações, seleção de texto e significado de palavras. */
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [highlightsOpen, setHighlightsOpen] = useState(false);
+  const [selection, setSelection] = useState<{
+    text: string;
+    block: number;
+    x: number;
+    top: number;
+    bottom: number;
+    word: string | null;
+  } | null>(null);
+  const [wordCard, setWordCard] = useState<{ word: string; x: number; y: number; info: WordInfo | null } | null>(
+    null,
+  );
+
+  /* Leitura em voz alta. */
+  const [speaking, setSpeaking] = useState(false);
+  const [speakingBlock, setSpeakingBlock] = useState<number | null>(null);
+  const [speechRate, setSpeechRate] = useState(1);
+  const speechRef = useRef<SpeechSession | null>(null);
+  /** A voz chegou ao fim do capítulo e segue no próximo. */
+  const continueSpeechRef = useRef(false);
+  /** Ao abrir um capítulo, rola até este parágrafo (vindo de uma marcação). */
+  const jumpToBlockRef = useRef<number | null>(null);
+  /** Última interação no leitor: o tempo de leitura só conta com o leitor presente. */
+  const lastActivityRef = useRef(Date.now());
 
   const [prefs, setPrefs] = useState(loadPrefs);
   /** Redesenha a página inicial quando um livro importado é removido (sai de "Continue lendo"). */
   const [, setHomeTick] = useState(0);
   const [importRequest, setImportRequest] = useState<BookHint | Record<string, never> | null>(null);
+  const { install } = useInstallPrompt();
   useEffect(() => {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -809,8 +982,18 @@ export function App() {
         return loadCast(book, text.slice(0, 3000)).then((list) => {
           if (cancelled) return;
           setCast(list);
-          setThreads((prev) => (Object.keys(prev).length > 0 ? prev : initialThreadsFor(list)));
-          setActiveCharId((id) => id || list[0]?.id || "");
+          // Conversa guardada da última vez; personagem sem conversa começa com a saudação.
+          const saved = loadChat(book.id);
+          const greetings = initialThreadsFor(list);
+          setThreads((prev) =>
+            Object.keys(prev).length > 0
+              ? prev
+              : Object.fromEntries(
+                  list.map((c) => [c.id, saved?.threads[c.id]?.length ? saved.threads[c.id] : greetings[c.id]]),
+                ),
+          );
+          const savedActive = saved?.activeCharId && list.some((c) => c.id === saved.activeCharId);
+          setActiveCharId((id) => id || (savedActive ? saved!.activeCharId : list[0]?.id) || "");
         });
       })
       .catch((err) => {
@@ -827,6 +1010,9 @@ export function App() {
   const onReadScroll = useCallback(() => {
     const el = readRef.current;
     if (!el) return;
+    lastActivityRef.current = Date.now();
+    setSelection(null);
+    setWordCard(null);
     const max = el.scrollHeight - el.clientHeight;
     const r = max <= 0 ? 0 : el.scrollTop / max;
     setScrollRatio(r);
@@ -861,7 +1047,19 @@ export function App() {
     window.scrollTo({ top: 0 });
   }, []);
 
+  const stopSpeaking = useCallback(() => {
+    speechRef.current?.stop();
+    speechRef.current = null;
+    continueSpeechRef.current = false;
+    setSpeaking(false);
+    setSpeakingBlock(null);
+  }, []);
+
   const leaveBook = useCallback(() => {
+    stopSpeaking();
+    setHighlightsOpen(false);
+    setSelection(null);
+    setWordCard(null);
     prevChapterIdxRef.current = null;
     setBook(null);
     setCast(null);
@@ -875,7 +1073,7 @@ export function App() {
     setLoadState("idle");
     setLoadError(null);
     setChatOpen(false);
-  }, []);
+  }, [stopSpeaking]);
 
   const retryLoad = useCallback(() => setLoadAttempt((n) => n + 1), []);
 
@@ -886,6 +1084,32 @@ export function App() {
   );
 
   const messages = character ? (threads[character.id] ?? EMPTY_THREAD) : EMPTY_THREAD;
+
+  /** Guarda a conversa do livro para continuar na próxima vez. */
+  useEffect(() => {
+    if (!book || !cast || Object.keys(threads).length === 0) return;
+    const t = window.setTimeout(() => saveChat(book.id, threads, activeCharId), 400);
+    return () => window.clearTimeout(t);
+  }, [book, cast, threads, activeCharId]);
+
+  /** Marcações do livro aberto. */
+  useEffect(() => {
+    setHighlights(book ? loadHighlights(book.id) : []);
+  }, [book]);
+
+  /** Tempo de leitura (para a sequência de dias e a meta): conta de 15 em 15 s com o leitor ativo. */
+  useEffect(() => {
+    if (!book || loadState !== "ready") return;
+    const TICK = 15;
+    const t = window.setInterval(() => {
+      const active = Date.now() - lastActivityRef.current < 120_000 || speechRef.current !== null;
+      if (document.visibilityState === "visible" && active) addReadingSeconds(TICK);
+    }, TICK * 1000);
+    return () => window.clearInterval(t);
+  }, [book, loadState]);
+
+  /** A voz para ao sair do livro ou fechar a página. */
+  useEffect(() => () => speechRef.current?.stop(), []);
 
   useEffect(() => {
     const el = chatBodyRef.current;
@@ -909,8 +1133,11 @@ export function App() {
       const el = readRef.current;
       const ratio = restoreScrollRef.current;
       restoreScrollRef.current = null;
+      const jump = jumpToBlockRef.current;
+      jumpToBlockRef.current = null;
       if (!el) return;
-      el.scrollTop = ratio ? ratio * (el.scrollHeight - el.clientHeight) : 0;
+      if (jump !== null) scrollToBlock(jump);
+      else el.scrollTop = ratio ? ratio * (el.scrollHeight - el.clientHeight) : 0;
       onReadScroll();
     });
     return () => cancelAnimationFrame(frame);
@@ -975,6 +1202,15 @@ export function App() {
   }, [scrollRatio, character, currentChapter, loadState, loading, chapterIndex]);
 
   const displayedStory = currentChapter?.body ?? "";
+
+  /** Rola até um parágrafo do capítulo aberto e o destaca por um instante. */
+  function scrollToBlock(i: number) {
+    const target = readRef.current?.querySelector<HTMLElement>(`[data-block="${i}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: "center" });
+    target.classList.add("flash");
+    window.setTimeout(() => target.classList.remove("flash"), 1800);
+  }
 
   const blocks = useMemo(
     () => toBlocks(displayedStory, currentChapter?.label),
@@ -1072,6 +1308,220 @@ export function App() {
     return map;
   }, [chunks]);
 
+  /** Texto na tela de cada parágrafo: a tradução, quando ligada e pronta, ou o original. */
+  const shownTexts = useMemo(
+    () =>
+      blocks.map((b, i) => {
+        const c = chunkOfBlock[i];
+        return (translateOn ? translations[c]?.[i - chunks[c][0]] : null) ?? b.text;
+      }),
+    [blocks, chunkOfBlock, chunks, translateOn, translations],
+  );
+  /** Idioma do parágrafo na tela (para a voz e o dicionário). */
+  const blockLanguage = (i: number): "pt" | "en" => {
+    if (!book) return "pt";
+    const c = chunkOfBlock[i];
+    const translatedNow = translateOn && translations[c]?.[i - (chunks[c]?.[0] ?? 0)];
+    return translatedNow ? "pt" : book.textLanguage;
+  };
+
+  /* ---- Leitura em voz alta ---- */
+  const canSpeak = speechSupported();
+
+  function firstVisibleBlock(): number {
+    const el = readRef.current;
+    if (!el) return 0;
+    const top = el.getBoundingClientRect().top;
+    const els = Array.from(el.querySelectorAll<HTMLElement>("[data-block]"));
+    const first = els.find((b) => b.getBoundingClientRect().bottom > top + 8);
+    return first ? Number(first.dataset.block) : 0;
+  }
+
+  function startSpeaking(from: number, rate = speechRate) {
+    if (!book) return;
+    speechRef.current?.stop();
+    const lang = translateOn ? "pt" : book.textLanguage;
+    const hasNext = chapterIndex < chapters.length - 1;
+    setSpeaking(true);
+    speechRef.current = speakParagraphs(
+      shownTexts,
+      from,
+      lang,
+      rate,
+      (i) => {
+        setSpeakingBlock(i);
+        lastActivityRef.current = Date.now();
+        const target = readRef.current?.querySelector<HTMLElement>(`[data-block="${i}"]`);
+        const page = readRef.current;
+        if (target && page) {
+          const r = target.getBoundingClientRect();
+          const pr = page.getBoundingClientRect();
+          if (r.top < pr.top + 40 || r.bottom > pr.bottom - 40) target.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+      },
+      () => {
+        speechRef.current = null;
+        if (hasNext) {
+          // Fim do capítulo: continua lendo o próximo.
+          continueSpeechRef.current = true;
+          setChapterIndex((n) => n + 1);
+        } else {
+          setSpeaking(false);
+          setSpeakingBlock(null);
+        }
+      },
+    );
+  }
+
+  /** Troca de capítulo pelo leitor (não pela voz) ou tradução ligada/desligada: a voz para. */
+  useEffect(() => {
+    if (!continueSpeechRef.current) stopSpeaking();
+  }, [chapterIndex, translateOn, stopSpeaking]);
+
+  /** A voz terminou um capítulo: quando o próximo estiver na tela, continua do começo. */
+  useEffect(() => {
+    if (!continueSpeechRef.current || loadState !== "ready" || blocks.length === 0) return;
+    continueSpeechRef.current = false;
+    const frame = requestAnimationFrame(() => startSpeaking(0));
+    return () => cancelAnimationFrame(frame);
+  }, [blocks, loadState]);
+
+  /* ---- Seleção de texto: destacar, significado, compartilhar ---- */
+  useEffect(() => {
+    const onChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) setSelection(null);
+    };
+    document.addEventListener("selectionchange", onChange);
+    return () => document.removeEventListener("selectionchange", onChange);
+  }, []);
+
+  function handleSelection() {
+    window.setTimeout(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return setSelection(null);
+      const text = sel.toString().replace(/\s+/g, " ").trim();
+      if (!text) return setSelection(null);
+      const blockOf = (n: Node | null) =>
+        (n instanceof Element ? n : n?.parentElement)?.closest<HTMLElement>("[data-block]") ?? null;
+      const a = blockOf(sel.anchorNode);
+      // Só dentro de um parágrafo (destaques que atravessam parágrafos não teriam onde ser desenhados).
+      if (!a || a !== blockOf(sel.focusNode)) return setSelection(null);
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      const word = !/\s/.test(text) ? normalizeWord(text) : null;
+      setSelection({
+        text,
+        block: Number(a.dataset.block),
+        x: rect.left + rect.width / 2,
+        top: rect.top,
+        bottom: rect.bottom,
+        word,
+      });
+      setWordCard(null);
+    }, 10);
+  }
+
+  function clearSelection() {
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
+  }
+
+  function addHighlight() {
+    if (!book || !selection || !currentChapter) return;
+    const text = selection.text.slice(0, MAX_HIGHLIGHT_CHARS);
+    const next: Highlight[] = [
+      ...highlights,
+      {
+        id: uid(),
+        chapterIndex,
+        chapterLabel: currentChapter.label,
+        paragraph: selection.block,
+        text,
+        createdAt: Date.now(),
+      },
+    ];
+    setHighlights(next);
+    saveHighlights(book.id, next);
+    clearSelection();
+    setToast("Trecho destacado");
+  }
+
+  function removeHighlight(id: string) {
+    if (!book) return;
+    const next = highlights.filter((h) => h.id !== id);
+    setHighlights(next);
+    saveHighlights(book.id, next);
+  }
+
+  function openHighlight(h: Highlight) {
+    setHighlightsOpen(false);
+    if (h.chapterIndex === chapterIndex) {
+      requestAnimationFrame(() => scrollToBlock(h.paragraph));
+    } else {
+      jumpToBlockRef.current = h.paragraph;
+      setChapterIndex(h.chapterIndex);
+    }
+  }
+
+  function showMeaning() {
+    if (!selection?.word) return;
+    const word = selection.word;
+    const lang = blockLanguage(selection.block);
+    setWordCard({ word, x: selection.x, y: selection.bottom, info: null });
+    clearSelection();
+    void lookupWord(word, lang, engine).then((info) =>
+      setWordCard((c) => (c && c.word === word ? { ...c, info } : c)),
+    );
+  }
+
+  const [sharing, setSharing] = useState(false);
+  async function shareCard(input: Omit<ShareCardInput, "bookTitle" | "bookAuthor" | "coverUrl">) {
+    if (!book || sharing) return;
+    setSharing(true);
+    try {
+      const blob = await renderShareCard({
+        ...input,
+        bookTitle: book.title,
+        bookAuthor: book.author,
+        coverUrl: book.coverUrl,
+      });
+      const slug = book.title.toLowerCase().normalize("NFD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const result = await shareOrDownload(blob, `storyverse-${slug || "livro"}.png`, `${book.title} no Storyverse`);
+      if (result === "downloaded") setToast("Imagem salva — é só postar!");
+    } catch (e) {
+      console.warn("Falha ao gerar o card:", e);
+      setToast("Não foi possível gerar a imagem.");
+    } finally {
+      setSharing(false);
+    }
+  }
+
+  function shareMessage(m: Msg) {
+    if (!character) return;
+    const idx = messages.findIndex((x) => x.id === m.id);
+    const question = [...messages.slice(0, idx)].reverse().find((x) => x.role === "user")?.text;
+    void shareCard({
+      kind: "chat",
+      text: m.text,
+      characterName: character.name,
+      characterRole: character.role,
+      characterColor: character.color,
+      question,
+    });
+  }
+
+  function shareQuote(text: string, chapterLabel?: string) {
+    void shareCard({ kind: "quote", text, chapterLabel });
+  }
+
+  function resetConversation() {
+    if (!character) return;
+    if (!window.confirm(`Recomeçar a conversa com ${character.name}? As mensagens desta conversa serão apagadas.`)) {
+      return;
+    }
+    setThreads((prev) => ({ ...prev, [character.id]: initialThreadsFor([character])[character.id] }));
+  }
+
   /** Posição aproximada no livro inteiro (capítulos anteriores + rolagem no atual). */
   const readingProgressPct =
     chapters.length > 0 ? ((chapterIndex + scrollRatio) / chapters.length) * 100 : 0;
@@ -1080,10 +1530,17 @@ export function App() {
     [displayedStory, scrollRatio],
   );
 
+  const limitApplies = detectProvider() === "live";
+  const outOfMessages = limitApplies && messagesLeft <= 0;
+
   async function sendMessage(raw: string) {
     if (!book || !character || loadState !== "ready" || !displayedStory) return;
     const text = raw.trim();
     if (!text || loading) return;
+    if (limitApplies && messagesLeftToday() <= 0) {
+      setMessagesLeft(0);
+      return;
+    }
 
     setError(null);
     setInput("");
@@ -1111,6 +1568,7 @@ export function App() {
         textLanguage: book.textLanguage,
       });
       const botMsg: Msg = { id: uid(), role: "assistant", text: reply };
+      if (limitApplies) setMessagesLeft(countMessage());
       setThreads((prev) => ({
         ...prev,
         [character.id]: [...(prev[character.id] ?? []), botMsg],
@@ -1156,6 +1614,11 @@ export function App() {
               <span className="status-dot" aria-hidden="true" />
               {providerLabel}
             </span>
+            {install ? (
+              <button type="button" className="btn nav-install" onClick={() => void install()}>
+                Instalar app
+              </button>
+            ) : null}
             <button type="button" className="btn nav-import" onClick={() => setImportRequest({})}>
               {Icon.upload}
               Importar livro
@@ -1244,6 +1707,8 @@ export function App() {
             <p>Pergunte, provoque, desabafe — eles sabem onde você parou e não dão spoiler.</p>
           </div>
         </section>
+
+        {recent.length > 0 || hasAnyReading() ? <ReadingStreak /> : null}
 
         {recent.length > 0 ? <ContinueReading items={recent} onOpen={startBook} /> : null}
 
@@ -1375,6 +1840,46 @@ export function App() {
         ) : null}
 
         <div className="reader-tools">
+          {canSpeak && ready ? (
+            <>
+              {speaking ? (
+                <button
+                  type="button"
+                  className="icon-btn text-btn rate-btn"
+                  onClick={() => {
+                    const rates = [1, 1.25, 1.5, 0.85];
+                    const next = rates[(rates.indexOf(speechRate) + 1) % rates.length];
+                    setSpeechRate(next);
+                    startSpeaking(speakingBlock ?? firstVisibleBlock(), next);
+                  }}
+                  aria-label={`Velocidade da voz: ${speechRate}x`}
+                  title="Velocidade da voz"
+                >
+                  {String(speechRate).replace(".", ",")}x
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={`icon-btn ${speaking ? "is-active" : ""}`}
+                onClick={() => (speaking ? stopSpeaking() : startSpeaking(firstVisibleBlock()))}
+                aria-pressed={speaking}
+                aria-label={speaking ? "Parar a leitura em voz alta" : "Ouvir o capítulo em voz alta"}
+                title={speaking ? "Parar" : "Ouvir em voz alta"}
+              >
+                {speaking ? Icon.stop : Icon.speaker}
+              </button>
+            </>
+          ) : null}
+          <button
+            type="button"
+            className="icon-btn marks-btn"
+            onClick={() => setHighlightsOpen(true)}
+            aria-label={`Marcações (${highlights.length})`}
+            title="Marcações e citações"
+          >
+            {Icon.bookmark}
+            {highlights.length > 0 ? <span className="badge">{highlights.length}</span> : null}
+          </button>
           {canTranslate ? (
             <button
               type="button"
@@ -1447,7 +1952,14 @@ export function App() {
           ) : null}
 
           {ready && currentChapter ? (
-            <article className="prose" aria-label="Texto do capítulo">
+            <article
+              className="prose"
+              aria-label="Texto do capítulo"
+              onMouseUp={handleSelection}
+              onTouchEnd={handleSelection}
+              onKeyUp={handleSelection}
+              onPointerDown={() => (lastActivityRef.current = Date.now())}
+            >
               <header className="chapter-head">
                 <span>
                   {chapterIndex + 1} de {chapters.length}
@@ -1484,19 +1996,31 @@ export function App() {
 
               {blocks.map((b, i) => {
                 const c = chunkOfBlock[i];
-                const translated = translateOn ? translations[c]?.[i - chunks[c][0]] : null;
                 const pending = translateOn && !translations[c];
-                const text = withItalics(translated ?? b.text);
+                const marks = highlights
+                  .filter((h) => h.chapterIndex === chapterIndex && h.paragraph === i)
+                  .map((h) => h.text);
+                // Com destaque, o itálico (_assim_) sai: o trecho marcado precisa bater com o texto.
+                const text =
+                  marks.length > 0
+                    ? splitByHighlights(shownTexts[i].replace(/_/g, ""), marks).map((piece, k) =>
+                        piece.marked ? <mark key={k}>{piece.text}</mark> : piece.text,
+                      )
+                    : withItalics(shownTexts[i]);
                 const className =
-                  [i === dropCapIndex ? "dropcap" : "", pending ? "is-translating" : ""]
+                  [
+                    i === dropCapIndex ? "dropcap" : "",
+                    pending ? "is-translating" : "",
+                    speakingBlock === i ? "is-speaking" : "",
+                  ]
                     .filter(Boolean)
                     .join(" ") || undefined;
                 return b.kind === "heading" ? (
-                  <h2 key={i} data-chunk={c} className={className}>
+                  <h2 key={i} data-chunk={c} data-block={i} className={className}>
                     {text}
                   </h2>
                 ) : (
-                  <p key={i} data-chunk={c} className={className}>
+                  <p key={i} data-chunk={c} data-block={i} className={className}>
                     {text}
                   </p>
                 );
@@ -1531,6 +2055,139 @@ export function App() {
           ) : null}
         </main>
 
+        {selection ? (
+          <div
+            className="sel-toolbar"
+            role="toolbar"
+            aria-label="Ações do trecho selecionado"
+            style={{
+              // Metade da largura do menu (~180 px) + margem, para não sair da tela.
+              left: Math.min(Math.max(selection.x, 190), window.innerWidth - 190),
+              top: coarsePointer() || selection.top < 90 ? selection.bottom + 12 : selection.top - 54,
+            }}
+            // Clicar no menu não pode desfazer a seleção antes do clique.
+            onMouseDown={(e) => e.preventDefault()}
+            onPointerDown={(e) => e.preventDefault()}
+          >
+            <button type="button" onClick={addHighlight}>
+              {Icon.highlight} Destacar
+            </button>
+            {selection.word ? (
+              <button type="button" onClick={showMeaning}>
+                {Icon.book} Significado
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                const text = selection.text;
+                clearSelection();
+                shareQuote(text, currentChapter?.label);
+              }}
+            >
+              {Icon.share} Compartilhar
+            </button>
+          </div>
+        ) : null}
+
+        {wordCard ? (
+          <div
+            className="word-card"
+            role="dialog"
+            aria-label={`Significado de ${wordCard.word}`}
+            style={{
+              left: Math.min(Math.max(wordCard.x, 176), window.innerWidth - 176),
+              top: Math.min(wordCard.y + 12, window.innerHeight - 240),
+            }}
+          >
+            <div className="word-card-head">
+              <strong>{wordCard.word}</strong>
+              {wordCard.info?.kind ? <em>{wordCard.info.kind}</em> : null}
+              <button type="button" className="icon-btn" onClick={() => setWordCard(null)} aria-label="Fechar">
+                {Icon.close}
+              </button>
+            </div>
+            {!wordCard.info ? (
+              <p className="word-card-muted">Procurando…</p>
+            ) : (
+              <>
+                {wordCard.info.translation ? (
+                  <p className="word-card-translation">
+                    <span>Em português:</span> {wordCard.info.translation}
+                  </p>
+                ) : null}
+                {wordCard.info.definitions.length > 0 ? (
+                  <ol>
+                    {wordCard.info.definitions.map((d) => (
+                      <li key={d}>{d}</li>
+                    ))}
+                  </ol>
+                ) : !wordCard.info.translation ? (
+                  <p className="word-card-muted">Não encontramos esta palavra no dicionário.</p>
+                ) : null}
+                {wordCard.info.source ? (
+                  <a className="word-card-source" href={wordCard.info.source.url} target="_blank" rel="noreferrer">
+                    {wordCard.info.source.label} ↗
+                  </a>
+                ) : null}
+              </>
+            )}
+          </div>
+        ) : null}
+
+        {highlightsOpen ? (
+          <div className="import-overlay" onClick={() => setHighlightsOpen(false)}>
+            <div
+              className="import-panel marks-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="marks-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="import-head">
+                <h3 id="marks-title">Marcações</h3>
+                <button type="button" className="icon-btn" onClick={() => setHighlightsOpen(false)} aria-label="Fechar">
+                  {Icon.close}
+                </button>
+              </div>
+              {highlights.length === 0 ? (
+                <p className="import-note">
+                  Selecione um trecho do livro e toque em <strong>Destacar</strong> para guardar suas citações
+                  favoritas aqui.
+                </p>
+              ) : (
+                <ul className="marks-list">
+                  {[...highlights]
+                    .sort((a, b) => a.chapterIndex - b.chapterIndex || a.paragraph - b.paragraph)
+                    .map((h) => (
+                      <li key={h.id}>
+                        <span className="marks-chapter">{h.chapterLabel}</span>
+                        <blockquote>{h.text}</blockquote>
+                        <div className="marks-actions">
+                          <button type="button" className="link-btn" onClick={() => openHighlight(h)}>
+                            Ir para o trecho
+                          </button>
+                          <button type="button" className="link-btn" onClick={() => shareQuote(h.text, h.chapterLabel)}>
+                            Compartilhar
+                          </button>
+                          <button type="button" className="link-btn marks-remove" onClick={() => removeHighlight(h.id)}>
+                            Remover
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {toast || sharing ? (
+          <div className="toast" role="status">
+            {sharing ? "Gerando a imagem…" : toast}
+          </div>
+        ) : null}
+
         <aside className={`chat ${chatOpen ? "is-open" : ""}`} aria-label="Conversa com os personagens">
           {character ? (
             <div className="chat-head">
@@ -1539,6 +2196,17 @@ export function App() {
                 <strong>{character.name}</strong>
                 <span>{character.role}</span>
               </div>
+              {userHasSpoken ? (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={resetConversation}
+                  aria-label={`Recomeçar a conversa com ${character.name}`}
+                  title="Recomeçar a conversa"
+                >
+                  {Icon.refresh}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="icon-btn chat-close"
@@ -1591,6 +2259,15 @@ export function App() {
                 <div key={m.id} className="msg msg-assistant">
                   <Avatar character={character} size="sm" />
                   <div className="bubble assistant">{m.text}</div>
+                  <button
+                    type="button"
+                    className="msg-share"
+                    onClick={() => shareMessage(m)}
+                    aria-label="Compartilhar esta fala como imagem"
+                    title="Compartilhar como imagem"
+                  >
+                    {Icon.share}
+                  </button>
                 </div>
               ) : (
                 <div key={m.id} className="msg msg-user">
@@ -1612,7 +2289,7 @@ export function App() {
 
           {error ? <div className="chat-err">{error}</div> : null}
 
-          {!userHasSpoken && character && ready && !loading ? (
+          {!userHasSpoken && character && ready && !loading && !outOfMessages ? (
             <div className="suggestions">
               {suggestionsFor(character).map((s) => (
                 <button key={s} type="button" className="suggestion" onClick={() => void sendMessage(s)}>
@@ -1622,6 +2299,21 @@ export function App() {
             </div>
           ) : null}
 
+          {limitApplies && messagesLeft > 0 && messagesLeft <= 5 ? (
+            <p className="limit-note">
+              {messagesLeft === 1 ? "Resta 1 mensagem hoje." : `Restam ${messagesLeft} mensagens hoje.`}
+            </p>
+          ) : null}
+
+          {outOfMessages ? (
+            <div className="limit-out" role="status">
+              <strong>Por hoje é só 💛</strong>
+              <span>
+                Você usou as {DAILY_MESSAGE_LIMIT} mensagens de hoje. Os personagens voltam a conversar amanhã —
+                enquanto isso, a leitura continua.
+              </span>
+            </div>
+          ) : (
           <form className="composer" onSubmit={onSend}>
             <textarea
               ref={inputRef}
@@ -1649,6 +2341,7 @@ export function App() {
               {Icon.send}
             </button>
           </form>
+          )}
         </aside>
 
         {!chatOpen ? (

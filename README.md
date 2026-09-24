@@ -24,6 +24,14 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
 - **Livros fora do acervo**: na busca, livros famosos que ainda têm direitos autorais (ex.: *Crepúsculo*) aparecem com capa, autor e ano, vindos do catálogo aberto da [Open Library](https://openlibrary.org) (só os dados do livro, nunca o texto), com um botão que abre a importação já preenchida.
 - **Importar meu livro** (.epub, .pdf ou .txt): o arquivo é lido e guardado só no navegador do leitor (IndexedDB), sem servidor e sem IA. Os personagens podem ser digitados na importação; em branco, a IA sugere o elenco ao abrir o livro. Livros com DRM e PDFs escaneados (sem texto) não abrem.
 - **Layout responsivo**: no celular, o chat vira um painel deslizante aberto por um botão flutuante.
+- **Conversa salva por livro**: ao voltar, os personagens lembram do que foi dito (botão para recomeçar a conversa).
+- **Card para compartilhar**: uma fala do personagem (com a pergunta do leitor) ou uma citação do livro vira uma imagem 1080×1350 pronta para Stories, TikTok e WhatsApp, gerada no navegador.
+- **Limite de 30 mensagens por dia** por navegador, para proteger a cota das chaves de IA (`DAILY_MESSAGE_LIMIT` em `src/lib/usageLimit.ts`).
+- **Ouvir em voz alta**: lê o capítulo com a voz do próprio aparelho, destacando o parágrafo, com velocidade ajustável e continuação automática no próximo capítulo.
+- **Marcações e citações favoritas**: selecione um trecho e toque em *Destacar*; o painel de marcações leva de volta ao trecho e compartilha como imagem.
+- **Significado da palavra**: selecione uma palavra — em inglês, mostra a tradução e a definição do Wiktionary; em português, a definição do Wikcionário.
+- **Sequência e meta de leitura**: dias seguidos lendo, os últimos 7 dias e uma meta diária de minutos (5 a 30), contados só com o leitor ativo.
+- **App instalável (PWA)**: "Adicionar à tela inicial" com ícone próprio; a página e os livros já abertos funcionam sem internet.
 
 ## Tecnologias
 
@@ -58,8 +66,20 @@ src/
     ├── importBook.ts       Leitura de .epub (fflate), .pdf (pdf.js, carregado sob demanda) e .txt
     ├── localBooks.ts       Livros importados guardados no IndexedDB do navegador
     ├── openLibrary.ts      Livros fora do acervo (título, autor, ano e capa) para a busca
+    ├── chatHistory.ts      Conversa com os personagens guardada por livro
+    ├── usageLimit.ts       Limite diário de mensagens
+    ├── shareCard.ts        Card de compartilhar (canvas)
+    ├── speech.ts           Leitura em voz alta (Web Speech API)
+    ├── highlights.ts       Marcações e citações
+    ├── dictionary.ts       Significado de palavras (Wiktionary/Wikcionário)
+    ├── readingStats.ts     Tempo de leitura, sequência de dias e meta
+    ├── pwa.ts              Service worker e convite de instalação
     ├── readingContext.ts   Trecho do livro perto da posição de leitura
     └── readingAmbient.ts   Mensagens automáticas ao trocar e ao passar do meio do capítulo
+public/
+├── sw.js                   Service worker (offline)
+├── manifest.webmanifest    Manifesto do app instalável
+└── icons/                  Ícones do app
 ```
 
 ## Regras de negócio
