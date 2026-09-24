@@ -343,7 +343,38 @@ export async function characterReply(params: {
   return callLlmWithFallback(system, messages);
 }
 
-const CAST_COLORS = ["#c9a88c", "#9eb8c9", "#c49ab8", "#9cb9a8", "#c4b07a"];
+/**
+ * Traduz parágrafos do inglês para o português. Devolve um item por parágrafo; os que a IA
+ * não devolver ficam `null` (a tela mantém o original).
+ */
+export async function translateParagraphs(paragraphs: string[]): Promise<(string | null)[]> {
+  if (detectProvider() === "mock") {
+    throw new Error("A tradução precisa de um serviço de IA configurado.");
+  }
+
+  const system = [
+    "Você é um tradutor literário. Traduza do inglês para o português do Brasil.",
+    "Preserve o estilo, o tom de época, os nomes próprios e as marcações de itálico com _sublinhados_.",
+    "Cada parágrafo vem precedido de um marcador como [1]. Responda APENAS com os parágrafos traduzidos, cada um precedido do mesmo marcador, na mesma ordem, sem comentários.",
+  ].join("\n");
+  const user = paragraphs.map((p, i) => `[${i + 1}] ${p}`).join("\n\n");
+  const chars = paragraphs.reduce((n, p) => n + p.length, 0);
+  const maxTokens = Math.min(2500, Math.ceil(chars / 2.5) + 200);
+
+  const out = await callLlmWithFallback(system, [{ role: "user", content: user }], maxTokens);
+
+  const result: (string | null)[] = paragraphs.map(() => null);
+  const parts = out.split(/^\s*\[(\d+)\]\s*/m);
+  for (let i = 1; i < parts.length; i += 2) {
+    const n = Number(parts[i]) - 1;
+    const text = parts[i + 1]?.replace(/\s+/g, " ").trim();
+    if (n >= 0 && n < result.length && text) result[n] = text;
+  }
+  if (result.every((r) => r === null)) throw new Error("A tradução veio num formato inesperado.");
+  return result;
+}
+
+const CAST_COLORS =["#c9a88c", "#9eb8c9", "#c49ab8", "#9cb9a8", "#c4b07a"];
 
 /** Personagem neutro usado quando a IA não está disponível ou falha ao sugerir o elenco. */
 export function narratorCharacter(title: string): StoryCharacter {

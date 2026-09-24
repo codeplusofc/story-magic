@@ -986,6 +986,18 @@
   font-size: 0.7em;
 }
 
+.translate-btn {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.translate-btn.is-active {
+  border-color: var(--r-accent);
+  color: var(--r-accent);
+}
+
 .reader-title {
   display: flex;
   flex-direction: column;
@@ -1138,6 +1150,29 @@
 .chapter-ornament {
   color: var(--r-accent);
   font-size: 0.9rem;
+}
+
+.translate-note {
+  margin: -1.2rem 0 2rem;
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  text-align: center;
+  color: var(--r-muted);
+}
+
+.link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--r-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.prose .is-translating {
+  opacity: 0.45;
+  transition: opacity 0.3s;
 }
 
 .chapter-end {
@@ -1544,7 +1579,7 @@
     gap: 0.5rem;
   }
 
-  .reader-tools .text-btn {
+  .reader-tools .text-btn:not(.translate-btn) {
     display: none;
   }
 }

@@ -3,7 +3,9 @@ import { featuredBooks, suggestedBooks } from "./data/ebooks";
 import type { Ebook, StoryCharacter } from "./data/types";
 import {
   characterReply,
+  detectProvider,
   providerDisplayLabel,
+  translateParagraphs,
   USER_MESSAGE_MAX_CHARS,
   type ChatTurn,
 } from "./lib/ai";
@@ -13,6 +15,7 @@ import { fetchBookText, searchBooks, type SearchLanguage } from "./lib/gutenberg
 import { loadProgress, progressPct, recentProgress, saveProgress, type ReadingProgress } from "./lib/progress";
 import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
 import { excerptNearScrollRatio } from "./lib/readingContext";
+import { cachedTranslation, chunkRanges, storeTranslation } from "./lib/translate";
 import "./App.css";
 
 type Msg = { id: string; role: "user" | "assistant"; text: string };
@@ -45,13 +48,14 @@ function initialThreadsFor(cast: StoryCharacter[]): Record<string, Msg[]> {
   return initial;
 }
 
-function loadPrefs(): { theme: ReadingTheme; fontStep: number } {
+function loadPrefs(): { theme: ReadingTheme; fontStep: number; translate: boolean } {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (raw) {
-      const p = JSON.parse(raw) as { theme?: string; fontStep?: number };
+      const p = JSON.parse(raw) as { theme?: string; fontStep?: number; translate?: boolean };
       return {
         theme: p.theme === "sepia" ? "sepia" : "night",
+        translate: p.translate === true,
         fontStep:
           typeof p.fontStep === "number" && p.fontStep >= 0 && p.fontStep < FONT_SIZES.length
             ? p.fontStep
@@ -61,7 +65,7 @@ function loadPrefs(): { theme: ReadingTheme; fontStep: number } {
   } catch {
     // Sem armazenamento disponível: usa o padrão.
   }
-  return { theme: "night", fontStep: 1 };
+  return { theme: "night", fontStep: 1, translate: false };
 }
 
 function shortNameOf(c: StoryCharacter): string {
@@ -425,6 +429,12 @@ export function App() {
   const midChapterNudgeSentRef = useRef<Record<number, boolean>>({});
   /** Rolagem salva a reaplicar quando o capítulo onde o leitor parou for desenhado. */
   const restoreScrollRef = useRef<number | null>(null);
+  /** Livro + capítulo na tela: resultados de tradução de outro capítulo são descartados. */
+  const chapterKey = book ? `${book.gutenbergId}:${chapterIndex}` : "";
+  const chapterKeyRef = useRef(chapterKey);
+  chapterKeyRef.current = chapterKey;
+  /** Trecho de tradução no topo da tela, medido junto com a rolagem. */
+  const [visibleChunk, setVisibleChunk] = useState<{ key: string; chunk: number } | null>(null);
 
   useEffect(() => {
     if (!book) return;
@@ -474,6 +484,21 @@ export function App() {
     const max = el.scrollHeight - el.clientHeight;
     const r = max <= 0 ? 0 : el.scrollTop / max;
     setScrollRatio(r);
+
+    // Busca binária pelo primeiro parágrafo visível (estão em ordem na página).
+    const els = el.querySelectorAll<HTMLElement>("[data-chunk]");
+    if (els.length === 0) return;
+    const top = el.getBoundingClientRect().top;
+    let lo = 0;
+    let hi = els.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (els[mid].getBoundingClientRect().bottom > top) hi = mid;
+      else lo = mid + 1;
+    }
+    const chunk = Number(els[lo].dataset.chunk);
+    const key = chapterKeyRef.current;
+    setVisibleChunk((v) => (v?.key === key && v.chunk === chunk ? v : { key, chunk }));
   }, []);
 
   const prevChapterIdxRef = useRef<number | null>(null);
@@ -613,6 +638,80 @@ export function App() {
     () => blocks.findIndex((b) => b.kind === "p" && b.text.length > 80),
     [blocks],
   );
+
+  /* ---- Tradução dos livros em inglês: trecho a trecho, conforme o leitor avança. ---- */
+  const canTranslate = book?.textLanguage === "en" && detectProvider() === "live";
+  const translateOn = canTranslate && prefs.translate;
+  const chunks = useMemo(() => chunkRanges(blocks.map((b) => b.text)), [blocks]);
+  const [translated, setTranslated] = useState<{
+    key: string;
+    byChunk: Record<number, (string | null)[]>;
+  }>({ key: "", byChunk: {} });
+  const translations = translated.key === chapterKey ? translated.byChunk : {};
+  const [translatingChunk, setTranslatingChunk] = useState<number | null>(null);
+  const [failedChunks, setFailedChunks] = useState<number[]>([]);
+
+  /** Troca de capítulo: começa com o que já foi traduzido antes e está guardado. */
+  useEffect(() => {
+    const cached: Record<number, (string | null)[]> = {};
+    if (book && canTranslate) {
+      chunks.forEach((_, c) => {
+        const t = cachedTranslation(book.gutenbergId, chapterIndex, c);
+        if (t) cached[c] = t;
+      });
+    }
+    setTranslated({ key: chapterKeyRef.current, byChunk: cached });
+    setTranslatingChunk(null);
+    setFailedChunks([]);
+  }, [book, canTranslate, chapterIndex, chunks]);
+
+  /** Traduz o trecho visível e o seguinte, um pedido por vez. */
+  useEffect(() => {
+    if (!book || !translateOn || loadState !== "ready" || translatingChunk !== null) return;
+    // Espera o capítulo carregar o que está guardado e a rolagem ser medida.
+    if (translated.key !== chapterKey || visibleChunk?.key !== chapterKey) return;
+    const c = [visibleChunk.chunk, visibleChunk.chunk + 1].find(
+      (n) => n < chunks.length && !translations[n] && !failedChunks.includes(n),
+    );
+    if (c === undefined) return;
+    const key = chapterKey;
+    const [start, end] = chunks[c];
+    setTranslatingChunk(c);
+    translateParagraphs(blocks.slice(start, end).map((b) => b.text))
+      .then((result) => {
+        storeTranslation(book.gutenbergId, chapterIndex, c, result);
+        if (chapterKeyRef.current === key) {
+          setTranslated((prev) => ({ key, byChunk: { ...prev.byChunk, [c]: result } }));
+        }
+      })
+      .catch((err) => {
+        console.warn("Falha na tradução:", err);
+        if (chapterKeyRef.current === key) setFailedChunks((prev) => [...prev, c]);
+      })
+      .finally(() => {
+        if (chapterKeyRef.current === key) setTranslatingChunk(null);
+      });
+  }, [
+    book,
+    translateOn,
+    loadState,
+    translatingChunk,
+    visibleChunk,
+    chunks,
+    translated,
+    failedChunks,
+    chapterKey,
+    chapterIndex,
+    blocks,
+  ]);
+
+  const chunkOfBlock = useMemo(() => {
+    const map: number[] = [];
+    chunks.forEach(([start, end], c) => {
+      for (let i = start; i < end; i++) map[i] = c;
+    });
+    return map;
+  }, [chunks]);
 
   /** Posição aproximada no livro inteiro (capítulos anteriores + rolagem no atual). */
   const readingProgressPct =
@@ -896,6 +995,18 @@ export function App() {
         ) : null}
 
         <div className="reader-tools">
+          {canTranslate ? (
+            <button
+              type="button"
+              className={`icon-btn text-btn translate-btn ${prefs.translate ? "is-active" : ""}`}
+              onClick={() => setPrefs((p) => ({ ...p, translate: !p.translate }))}
+              aria-pressed={prefs.translate}
+              aria-label={prefs.translate ? "Ver o texto original em inglês" : "Traduzir para o português"}
+              title={prefs.translate ? "Ver o original em inglês" : "Traduzir para o português"}
+            >
+              {prefs.translate ? "PT" : "EN"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="icon-btn text-btn"
@@ -964,15 +1075,42 @@ export function App() {
                 </span>
               </header>
 
-              {blocks.map((b, i) =>
-                b.kind === "heading" ? (
-                  <h2 key={i}>{withItalics(b.text)}</h2>
+              {translateOn ? (
+                <div className="translate-note" role="status">
+                  {failedChunks.length > 0 ? (
+                    <>
+                      Parte deste capítulo não pôde ser traduzida agora.{" "}
+                      <button type="button" className="link-btn" onClick={() => setFailedChunks([])}>
+                        Tentar de novo
+                      </button>
+                    </>
+                  ) : translatingChunk !== null && !translations[visibleChunk?.chunk ?? 0] ? (
+                    "Traduzindo este trecho…"
+                  ) : (
+                    "Tradução automática feita por IA. Pode conter imprecisões."
+                  )}
+                </div>
+              ) : null}
+
+              {blocks.map((b, i) => {
+                const c = chunkOfBlock[i];
+                const translated = translateOn ? translations[c]?.[i - chunks[c][0]] : null;
+                const pending = translateOn && !translations[c];
+                const text = withItalics(translated ?? b.text);
+                const className =
+                  [i === dropCapIndex ? "dropcap" : "", pending ? "is-translating" : ""]
+                    .filter(Boolean)
+                    .join(" ") || undefined;
+                return b.kind === "heading" ? (
+                  <h2 key={i} data-chunk={c} className={className}>
+                    {text}
+                  </h2>
                 ) : (
-                  <p key={i} className={i === dropCapIndex ? "dropcap" : undefined}>
-                    {withItalics(b.text)}
+                  <p key={i} data-chunk={c} className={className}>
+                    {text}
                   </p>
-                ),
-              )}
+                );
+              })}
 
               <footer className="chapter-end">
                 {hasNextChapter ? (
