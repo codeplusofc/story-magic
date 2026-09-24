@@ -205,6 +205,12 @@ const Icon = {
       <path d="M18 6L6 18M6 6l12 12" />
     </svg>
   ),
+  upload: (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 16V4M7 9l5-5 5 5" />
+      <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
+    </svg>
+  ),
   search: (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <circle cx="11" cy="11" r="7" />
@@ -237,7 +243,7 @@ const LANGUAGE_FILTERS: { id: SearchLanguage; label: string }[] = [
 ];
 
 /** Busca no acervo inteiro do Project Gutenberg; sem busca, mostra sugestões prontas. */
-function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
+function Explore({ onOpen, onImport }: { onOpen: (b: Ebook) => void; onImport: () => void }) {
   const [query, setQuery] = useState("");
   const [language, setLanguage] = useState<SearchLanguage>("pt");
   const [books, setBooks] = useState<Ebook[]>([]);
@@ -337,7 +343,11 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
       ) : status === "ready" && books.length === 0 ? (
         <p className="explore-note">
           Nenhum livro encontrado para “{term}”. O acervo só tem livros em domínio público; se você
-          tem o arquivo do livro, <a href="#meus-livros">importe o seu</a>.
+          tem o arquivo do livro,{" "}
+          <button type="button" className="inline-link" onClick={onImport}>
+            importe o seu
+          </button>
+          .
         </p>
       ) : (
         <p className="explore-note">
@@ -382,9 +392,19 @@ function Explore({ onOpen }: { onOpen: (b: Ebook) => void }) {
 }
 
 /** Livros do próprio leitor (.epub, .pdf, .txt): lidos e guardados só neste aparelho. */
-function MyBooks({ onOpen, onRemoved }: { onOpen: (b: Ebook) => void; onRemoved: () => void }) {
+function MyBooks({
+  onOpen,
+  onRemoved,
+  open,
+  setOpen,
+}: {
+  onOpen: (b: Ebook) => void;
+  onRemoved: () => void;
+  /** O formulário também abre pelo topo da página, pelo destaque e pela busca sem resultado. */
+  open: boolean;
+  setOpen: (open: boolean) => void;
+}) {
   const [books, setBooks] = useState<Ebook[]>([]);
-  const [open, setOpen] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -411,7 +431,7 @@ function MyBooks({ onOpen, onRemoved }: { onOpen: (b: Ebook) => void; onRemoved:
     setTitle("");
     setAuthor("");
     setCastText("");
-  }, [saving]);
+  }, [saving, setOpen]);
 
   useEffect(() => {
     if (!open) return;
@@ -594,16 +614,40 @@ function MyBooks({ onOpen, onRemoved }: { onOpen: (b: Ebook) => void; onRemoved:
   );
 }
 
-/** Livros começados, para retomar do ponto onde o leitor parou. */
+/** Quantas capas cabem numa fileira da grade (muda com a largura da tela). */
+function useGridColumns(ref: React.RefObject<HTMLElement>): number {
+  const [cols, setCols] = useState(6);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const n = getComputedStyle(el).gridTemplateColumns.split(" ").filter(Boolean).length;
+      if (n > 0) setCols(n);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return cols;
+}
+
+/** Livros começados, para retomar do ponto onde o leitor parou. Mostra uma fileira por vez. */
 function ContinueReading({ items, onOpen }: { items: ReadingProgress[]; onOpen: (b: Ebook) => void }) {
+  const gridRef = useRef<HTMLDivElement>(null);
+  const cols = useGridColumns(gridRef);
+  const [rows, setRows] = useState(1);
+  const shown = items.slice(0, cols * rows);
+  const hidden = items.length - shown.length;
+
   return (
     <section className="shelf continue">
       <div className="shelf-head">
         <h2>Continue lendo</h2>
         <p>Volte exatamente de onde parou.</p>
       </div>
-      <div className="result-grid">
-        {items.map((p) => {
+      <div className="result-grid" ref={gridRef}>
+        {shown.map((p) => {
           const pct = Math.round(progressPct(p));
           return (
             <button
@@ -625,6 +669,19 @@ function ContinueReading({ items, onOpen }: { items: ReadingProgress[]; onOpen: 
           );
         })}
       </div>
+      {hidden > 0 || rows > 1 ? (
+        <div className="shelf-more">
+          {hidden > 0 ? (
+            <button type="button" className="btn" onClick={() => setRows((r) => r + 2)}>
+              Ver mais ({hidden})
+            </button>
+          ) : (
+            <button type="button" className="btn" onClick={() => setRows(1)}>
+              Mostrar menos
+            </button>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -651,6 +708,7 @@ export function App() {
   const [prefs, setPrefs] = useState(loadPrefs);
   /** Redesenha a página inicial quando um livro importado é removido (sai de "Continue lendo"). */
   const [, setHomeTick] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
   useEffect(() => {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -1050,10 +1108,16 @@ export function App() {
             </span>
             Storyverse
           </span>
-          <span className="status" title="Mostra se o chat usa IA em tempo real ou respostas de demonstração.">
-            <span className="status-dot" aria-hidden="true" />
-            {providerLabel}
-          </span>
+          <div className="home-nav-actions">
+            <span className="status" title="Mostra se o chat usa IA em tempo real ou respostas de demonstração.">
+              <span className="status-dot" aria-hidden="true" />
+              {providerLabel}
+            </span>
+            <button type="button" className="btn nav-import" onClick={() => setImportOpen(true)}>
+              {Icon.upload}
+              Importar livro
+            </button>
+          </div>
         </nav>
 
         <header className="hero">
@@ -1075,7 +1139,15 @@ export function App() {
               <a className="btn btn-lg" href="#acervo">
                 Buscar no acervo
               </a>
+              <button type="button" className="btn btn-lg" onClick={() => setImportOpen(true)}>
+                {Icon.upload}
+                Importar meu livro
+              </button>
             </div>
+            <p className="hero-hint">
+              Não achou o seu livro favorito? Importe o arquivo (.epub, .pdf ou .txt) e converse com os
+              personagens.
+            </p>
           </div>
 
           {heroBook?.demo && heroChar ? (
@@ -1116,7 +1188,7 @@ export function App() {
           <div className="step">
             <span className="step-n">1</span>
             <h3>Escolha uma história</h3>
-            <p>Romances em português, terror, vampiros e mistério, ou qualquer livro do acervo.</p>
+            <p>Romances em português, terror, vampiros e mistério, qualquer livro do acervo ou um arquivo seu.</p>
           </div>
           <div className="step">
             <span className="step-n">2</span>
@@ -1183,9 +1255,14 @@ export function App() {
           );
         })}
 
-        <MyBooks onOpen={startBook} onRemoved={() => setHomeTick((n) => n + 1)} />
+        <MyBooks
+          onOpen={startBook}
+          onRemoved={() => setHomeTick((n) => n + 1)}
+          open={importOpen}
+          setOpen={setImportOpen}
+        />
 
-        <Explore onOpen={startBook} />
+        <Explore onOpen={startBook} onImport={() => setImportOpen(true)} />
 
         <footer className="home-foot">
           Storyverse · leitura que conversa com você · textos em domínio público do{" "}

@@ -1839,3 +1839,47 @@
 .explore-note a {
   color: var(--accent-2);
 }
+
+/* ---- Atalhos para importar e "Ver mais" ---- */
+
+.home-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.nav-import {
+  flex-shrink: 0;
+  padding: 0.5rem 0.95rem;
+  font-size: 0.85rem;
+}
+
+.hero-hint {
+  margin: 1rem 0 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.inline-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent-2);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.shelf-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 1.4rem;
+}
+
+@media (max-width: 560px) {
+  /* No celular, o pill de status cede lugar ao botão de importar. */
+  .home-nav-actions .status {
+    display: none;
+  }
+}
