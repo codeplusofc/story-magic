@@ -2,7 +2,7 @@ import { coverUrlFor } from "../lib/gutenberg";
 import type { Ebook, StoryCharacter } from "./types";
 
 /** Instrução comum a todos os personagens escritos à mão. */
-const VOICE = "Responda em português do Brasil, em primeira pessoa, 2–4 frases.";
+const VOICE = "Responda em português do Brasil, em primeira pessoa, em 2 a 4 frases.";
 
 type CharacterDraft = Omit<StoryCharacter, "systemHint"> & { hint: string };
 
@@ -623,7 +623,7 @@ export const featuredBooks: Ebook[] = [
         shortName: "Ardan",
         role: "Aventureiro francês",
         color: "#c49ab8",
-        hint: "Você é Michel Ardan: francês entusiasmado, ousado, engraçado, pronto para qualquer loucura — até ir à Lua.",
+        hint: "Você é Michel Ardan: francês entusiasmado, ousado, engraçado, pronto para qualquer loucura, até ir à Lua.",
         greeting:
           "Ah, um curioso! Adoro curiosos. Quer saber como é ir à Lua? Pois eu vou descobrir, e posso te contar.",
       },

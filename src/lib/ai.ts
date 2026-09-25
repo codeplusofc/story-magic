@@ -1,4 +1,5 @@
 import type { StoryCharacter } from "../data/types";
+import { NATURAL_SPEECH_RULES, naturalizeReply } from "./naturalSpeech";
 
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
@@ -20,10 +21,10 @@ const DEFAULT_COOLDOWN_MS = 60_000;
 function mockReply(_character: StoryCharacter, userText: string): string {
   const t = userText.trim().toLowerCase();
   if (!t) {
-    return "Estou aqui — diga o que quer saber.";
+    return "Estou aqui, diga o que quer saber.";
   }
   if (t.includes("medo") || t.includes("assust") || t.includes("fear")) {
-    return "Respira. O medo aqui é barulho — o perigo é silêncio demais.";
+    return "Respira. O medo aqui é barulho, o perigo é silêncio demais.";
   }
   if (t.includes("sim") || t.includes("vamos") || t.includes("seguir") || t.includes("yes")) {
     return "Então vamos. Mas fique perto: histórias gostam de testar quem acha que manda.";
@@ -270,13 +271,14 @@ async function callLlmWithFallback(
 }
 
 function trimHistory(history: ChatTurn[]): ChatTurn[] {
-  const recent = history.slice(-HISTORY_WINDOW).map((m) => ({
-    role: m.role,
-    content:
-      m.content.length > HISTORY_MSG_MAX_CHARS
-        ? `${m.content.slice(0, HISTORY_MSG_MAX_CHARS)}…`
-        : m.content,
-  }));
+  const recent = history.slice(-HISTORY_WINDOW).map((m) => {
+    // Falas antigas com travessões e *ações* ensinariam o modelo a repetir o vício.
+    const content = m.role === "assistant" ? naturalizeReply(m.content) : m.content;
+    return {
+      role: m.role,
+      content: content.length > HISTORY_MSG_MAX_CHARS ? `${content.slice(0, HISTORY_MSG_MAX_CHARS)}…` : content,
+    };
+  });
   // Gemini exige que a conversa comece pelo usuário.
   while (recent.length > 0 && recent[0].role !== "user") recent.shift();
   return recent;
@@ -329,6 +331,7 @@ export async function characterReply(params: {
     ...(obra ? [obra] : []),
     character.systemHint,
     "Responda como o personagem, de forma breve. Não resuma o livro nem narre cenas novas; seja fiel à obra.",
+    NATURAL_SPEECH_RULES,
     "Não revele acontecimentos que vêm depois do trecho em que o leitor está (sem spoilers).",
     `Posição de leitura: ~${Math.round(readingProgressPct)}% do livro.`,
     langNote,
@@ -340,7 +343,8 @@ export async function characterReply(params: {
     { role: "user", content: userMessage.slice(0, USER_MESSAGE_MAX_CHARS) },
   ];
 
-  return callLlmWithFallback(system, messages);
+  const reply = await callLlmWithFallback(system, messages);
+  return naturalizeReply(reply, [character.name, character.shortName ?? ""]);
 }
 
 export const CAST_COLORS = ["#c9a88c", "#9eb8c9", "#c49ab8", "#9cb9a8", "#c4b07a"];
@@ -352,7 +356,7 @@ export function narratorCharacter(title: string): StoryCharacter {
     name: "Narrador",
     role: "A voz que conta esta história",
     color: CAST_COLORS[0],
-    systemHint: `Você é o narrador de "${title}": conhece a obra por dentro, comenta personagens e cenas com tom literário, sem spoilers. Responda em português do Brasil, 2–4 frases.`,
+    systemHint: `Você é o narrador de "${title}": conhece a obra por dentro, comenta personagens e cenas com tom literário, sem spoilers. Responda em português do Brasil, em 2 a 4 frases.`,
   };
 }
 
@@ -399,7 +403,7 @@ export async function suggestBookCharacters(params: {
         shortName: c.shortName?.trim() || undefined,
         role: c.role?.trim() || "Personagem da história",
         color: CAST_COLORS[i % CAST_COLORS.length],
-        systemHint: `Você é ${c.name} em "${params.title}". ${c.personality} Responda em português do Brasil, em primeira pessoa, 2–4 frases.`,
+        systemHint: `Você é ${c.name} em "${params.title}". ${c.personality} Responda em português do Brasil, em primeira pessoa, em 2 a 4 frases.`,
       }));
     return cast.length > 0 ? cast : [narratorCharacter(params.title)];
   } catch (e) {

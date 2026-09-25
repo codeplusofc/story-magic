@@ -5,6 +5,10 @@
  * - Texto dos livros já abertos: guardado para ler offline (até MAX_BOOKS livros).
  * - Capas: mostra a guardada e atualiza em segundo plano.
  * Busca, IA e tradução nunca passam por aqui (precisam de internet de qualquer jeito).
+ *
+ * Lembrete diário (Android com o app instalado): o Chrome acorda este arquivo mais ou menos uma
+ * vez por dia ("periodicsync"). Se o leitor ainda não leu hoje, aparece uma notificação montada
+ * com os dados que o app deixa no cache "sv-state" (sequência, último livro, personagem).
  */
 const VERSION = "v1";
 const SHELL = `storyverse-shell-${VERSION}`;
@@ -107,4 +111,79 @@ self.addEventListener("fetch", (event) => {
   ) {
     event.respondWith(staleWhileRevalidate(request));
   }
+});
+
+/* ---------------------------- Lembrete diário ---------------------------- */
+
+const STATE_CACHE = "sv-state";
+const dayKey = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+async function readState() {
+  const cache = await caches.open(STATE_CACHE);
+  const res = await cache.match("/__engagement");
+  return res ? res.json() : null;
+}
+
+async function maybeNotify(force) {
+  const state = await readState();
+  if (!state) return;
+  const cache = await caches.open(STATE_CACHE);
+  const now = new Date();
+  const today = dayKey(now);
+  const hour = now.getHours();
+  // Nada de notificação de madrugada, nem duas no mesmo dia, nem para quem já leu hoje.
+  if (!force && (hour < 9 || hour >= 22)) return;
+  const last = await cache.match("/__notified");
+  if (!force && last && (await last.text()) === today) return;
+  if (!force && state.lastReadDay === today) return;
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const streakAlive = state.streak > 0 && state.lastReadDay === dayKey(yesterday);
+  const book = state.book;
+  const who = book && book.character ? book.character : null;
+
+  let title;
+  let body;
+  if (streakAlive) {
+    title = `🔥 Sua sequência de ${state.streak} ${state.streak === 1 ? "dia" : "dias"} acaba hoje!`;
+    body = book
+      ? `${who ? `${who} está te esperando` : "Sua história continua"} em “${book.title}”. Bastam uns minutinhos.`
+      : "Bastam uns minutinhos de leitura para manter a sequência.";
+  } else if (book) {
+    title = who ? `${who} sente sua falta 💛` : "📖 Sua história está te esperando";
+    body = `Que tal continuar “${book.title}”${book.chapterLabel ? ` de onde parou (${book.chapterLabel})` : ""}?`;
+  } else {
+    title = "📖 Hora de ler";
+    body = "Escolha uma história e converse com quem vive nela.";
+  }
+
+  await self.registration.showNotification(title, {
+    body,
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    tag: "storyverse-daily",
+    data: { url: "/" },
+  });
+  await cache.put("/__notified", new Response(today));
+}
+
+self.addEventListener("periodicsync", (event) => {
+  if (event.tag === "storyverse-daily") event.waitUntil(maybeNotify(false));
+});
+
+// Usado pelo app para mostrar uma notificação de teste logo depois de ativar.
+self.addEventListener("message", (event) => {
+  if (event.data === "storyverse-test-reminder") event.waitUntil(maybeNotify(true));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      const open = list.find((c) => new URL(c.url).origin === self.location.origin);
+      return open ? open.focus() : self.clients.openWindow("/");
+    }),
+  );
 });
