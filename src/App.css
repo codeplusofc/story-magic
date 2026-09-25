@@ -63,6 +63,8 @@
 
 .avatar {
   --c: var(--accent);
+  position: relative;
+  overflow: hidden;
   display: inline-grid;
   place-items: center;
   flex-shrink: 0;
@@ -3005,4 +3007,23 @@
   flex-shrink: 0;
   padding: 0.4rem 0.9rem;
   font-size: 0.82rem;
+}
+
+/* ---- Retrato dos personagens (por cima da inicial) ---- */
+
+.avatar-photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Ilustrações de cena: os rostos costumam estar na parte de cima. */
+  object-position: 50% 22%;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.4s var(--ease-out);
+}
+
+.avatar-photo.is-loaded {
+  opacity: 1;
 }

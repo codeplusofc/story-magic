@@ -107,7 +107,11 @@ self.addEventListener("fetch", (event) => {
   }
   if (
     (sameOrigin && /^\/gutenberg\/cache\/epub\/\d+\/.*\.jpg$/.test(url.pathname)) ||
-    url.hostname === "covers.openlibrary.org"
+    url.hostname === "covers.openlibrary.org" ||
+    // Retratos dos personagens: gerados uma vez, guardados para sempre (e para ler offline).
+    url.hostname === "image.pollinations.ai" ||
+    url.hostname === "upload.wikimedia.org" ||
+    url.hostname === "thumb.wikimedia.org"
   ) {
     event.respondWith(staleWhileRevalidate(request));
   }

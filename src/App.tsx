@@ -40,6 +40,7 @@ import {
 } from "./lib/progress";
 import { chapterTransitionMessage, midChapterReadingHint, missYouMessage } from "./lib/readingAmbient";
 import { searchOutsideCatalog, type BookHint } from "./lib/openLibrary";
+import { cachedPortrait, requestPortrait } from "./lib/portraits";
 import { excerptNearScrollRatio } from "./lib/readingContext";
 import {
   addReadingSeconds,
@@ -194,7 +195,44 @@ function withItalics(text: string): React.ReactNode {
   return parts.length === 1 ? text : parts.map((p, i) => (i % 2 === 1 ? <em key={i}>{p}</em> : p));
 }
 
-function Avatar({ character, size = "md" }: { character: StoryCharacter; size?: "sm" | "md" | "lg" }) {
+/**
+ * Avatar do personagem: a inicial do nome e, por cima, o retrato (ilustração livre ou gerada),
+ * quando houver. `generate` pede o retrato se ainda não existir (no leitor); sem ele, só mostra
+ * retratos já guardados neste aparelho (página inicial, para não disparar dezenas de pedidos).
+ */
+function Avatar({
+  character,
+  size = "md",
+  bookTitle,
+  generate = false,
+}: {
+  character: StoryCharacter;
+  size?: "sm" | "md" | "lg";
+  bookTitle?: string;
+  generate?: boolean;
+}) {
+  const [src, setSrc] = useState<string | null>(() => (bookTitle ? cachedPortrait(character, bookTitle) : null));
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (!bookTitle) return;
+    const cached = cachedPortrait(character, bookTitle);
+    if (cached) {
+      setSrc(cached);
+      return;
+    }
+    setSrc(null);
+    setLoaded(false);
+    if (!generate) return;
+    let alive = true;
+    void requestPortrait(character, bookTitle).then((url) => {
+      if (alive && url) setSrc(url);
+    });
+    return () => {
+      alive = false;
+    };
+    // O objeto do personagem muda a cada render; nome e id bastam.
+  }, [character.id, character.name, bookTitle, generate]);
+
   return (
     <span
       className={`avatar avatar-${size}`}
@@ -202,6 +240,16 @@ function Avatar({ character, size = "md" }: { character: StoryCharacter; size?: 
       aria-hidden="true"
     >
       {shortNameOf(character).replace(/^(O|A|Mr\.|Mrs\.|Dr\.)\s+/i, "").charAt(0).toUpperCase()}
+      {src ? (
+        <img
+          className={`avatar-photo ${loaded ? "is-loaded" : ""}`}
+          src={src}
+          alt=""
+          loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => setSrc(null)}
+        />
+      ) : null}
     </span>
   );
 }
@@ -1986,7 +2034,7 @@ export function App() {
               </div>
               <div className="demo-chat">
                 <div className="demo-chat-head">
-                  <Avatar character={heroChar} size="sm" />
+                  <Avatar character={heroChar} size="sm" bookTitle={heroBook.title} />
                   <div>
                     <strong>{heroChar.name}</strong>
                     <small>{heroBook.title}</small>
@@ -2053,7 +2101,7 @@ export function App() {
                         <div className="book-cast">
                           <span className="avatar-stack">
                             {b.characters.map((c) => (
-                              <Avatar key={c.id} character={c} size="sm" />
+                              <Avatar key={c.id} character={c} size="sm" bookTitle={b.title} />
                             ))}
                           </span>
                           <span>Converse com {listNames(b.characters.map(shortNameOf))}</span>
@@ -2592,7 +2640,7 @@ export function App() {
         <aside className={`chat ${chatOpen ? "is-open" : ""}`} aria-label="Conversa com os personagens">
           {character ? (
             <div className="chat-head">
-              <Avatar character={character} size="lg" />
+              <Avatar character={character} size="lg" bookTitle={book.title} generate />
               <div className="chat-head-text">
                 <strong>{character.name}</strong>
                 <span>{character.role}</span>
@@ -2647,7 +2695,7 @@ export function App() {
                   style={{ "--c": c.color } as React.CSSProperties}
                   onClick={() => setActiveCharId(c.id)}
                 >
-                  <Avatar character={c} size="sm" />
+                  <Avatar character={c} size="sm" bookTitle={book.title} generate />
                   {shortNameOf(c)}
                 </button>
               ))}
@@ -2658,7 +2706,7 @@ export function App() {
             {messages.map((m) =>
               m.role === "assistant" && character ? (
                 <div key={m.id} className="msg msg-assistant">
-                  <Avatar character={character} size="sm" />
+                  <Avatar character={character} size="sm" bookTitle={book.title} generate />
                   <div className="bubble assistant">{m.text}</div>
                   <button
                     type="button"
@@ -2678,7 +2726,7 @@ export function App() {
             )}
             {loading && character ? (
               <div className="msg msg-assistant">
-                <Avatar character={character} size="sm" />
+                <Avatar character={character} size="sm" bookTitle={book.title} generate />
                 <div className="bubble assistant typing" aria-label={`${character.name} está escrevendo`}>
                   <span />
                   <span />
@@ -2754,7 +2802,7 @@ export function App() {
               requestAnimationFrame(() => inputRef.current?.focus());
             }}
           >
-            {character ? <Avatar character={character} size="sm" /> : null}
+            {character ? <Avatar character={character} size="sm" bookTitle={book.title} generate /> : null}
             {character ? `Conversar com ${shortNameOf(character)}` : "Conversar"}
           </button>
         ) : null}
