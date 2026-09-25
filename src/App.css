@@ -157,8 +157,10 @@
 }
 
 .wordmark-mark {
-  color: var(--accent);
-  font-size: 1rem;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px -6px rgba(228, 184, 106, 0.5);
 }
 
 .status {

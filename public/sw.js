@@ -10,10 +10,12 @@
  * vez por dia ("periodicsync"). Se o leitor ainda não leu hoje, aparece uma notificação montada
  * com os dados que o app deixa no cache "sv-state" (sequência, último livro, personagem).
  */
-const VERSION = "v1";
+// Mudar a versão faz quem já tem o app baixar de novo a página e os ícones. Livros e imagens
+// (capas, retratos) ficam em caches sem versão: continuam guardados entre atualizações.
+const VERSION = "v2";
 const SHELL = `storyverse-shell-${VERSION}`;
-const BOOKS = `storyverse-books-${VERSION}`;
-const IMAGES = `storyverse-images-${VERSION}`;
+const BOOKS = "storyverse-books-v1";
+const IMAGES = "storyverse-images-v1";
 const MAX_BOOKS = 30;
 const MAX_IMAGES = 200;
 
@@ -31,7 +33,9 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) =>
-        Promise.all(keys.filter((k) => k.startsWith("storyverse-") && !k.endsWith(VERSION)).map((k) => caches.delete(k))),
+        Promise.all(
+          keys.filter((k) => k.startsWith("storyverse-shell-") && k !== SHELL).map((k) => caches.delete(k)),
+        ),
       )
       .then(() => self.clients.claim()),
   );

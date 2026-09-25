@@ -211,9 +211,12 @@ export async function renderShareCard(input: ShareCardInput): Promise<Blob> {
   // Rodapé: marca.
   ctx.fillStyle = "rgba(220, 190, 150, 0.16)";
   ctx.fillRect(PAD, footerTop, bodyW, 2);
+  // Marca: ícone do app + nome.
+  const logo = await loadImage("/icons/icon-192.png");
+  if (logo) ctx.drawImage(logo, PAD, footerTop + 22, 50, 50);
   ctx.fillStyle = "#e4b86a";
   ctx.font = `600 40px ${SERIF}`;
-  ctx.fillText("✦ Storyverse", PAD, footerTop + 60);
+  ctx.fillText(logo ? "Storyverse" : "✦ Storyverse", logo ? PAD + 66 : PAD, footerTop + 60);
   ctx.fillStyle = "#9c948a";
   ctx.font = `500 26px ${SANS}`;
   ctx.textAlign = "right";

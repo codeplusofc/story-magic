@@ -1912,9 +1912,7 @@ export function App() {
       <div className="home">
         <nav className="home-nav">
           <span className="wordmark">
-            <span className="wordmark-mark" aria-hidden="true">
-              ✦
-            </span>
+            <img className="wordmark-mark" src="/icons/icon.svg" alt="" aria-hidden="true" />
             Storyverse
           </span>
           <div className="home-nav-actions">
