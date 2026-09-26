@@ -63,6 +63,8 @@
 
 .avatar {
   --c: var(--accent);
+  position: relative;
+  overflow: hidden;
   display: inline-grid;
   place-items: center;
   flex-shrink: 0;
@@ -155,8 +157,10 @@
 }
 
 .wordmark-mark {
-  color: var(--accent);
-  font-size: 1rem;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px -6px rgba(228, 184, 106, 0.5);
 }
 
 .home-nav-links {
@@ -3236,4 +3240,347 @@
   .nav-import-short {
     display: inline;
   }
+}
+
+/* ============ Engajamento: avisos, escudo, lembrete, comemoração ============ */
+
+.nudge {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin: 0.2rem 0 1.2rem;
+  padding: 0.9rem 1rem 0.9rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--accent-dim);
+  background: linear-gradient(120deg, rgba(228, 184, 106, 0.14), rgba(228, 184, 106, 0.04));
+  animation: rise 0.4s var(--ease-out) both;
+}
+
+.nudge > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.nudge strong {
+  font-size: 0.98rem;
+}
+
+.nudge span {
+  font-size: 0.84rem;
+  color: var(--text-read);
+}
+
+.nudge-emoji {
+  font-size: 1.9rem;
+  animation: flicker 1.6s ease-in-out infinite;
+}
+
+.nudge .btn {
+  flex-shrink: 0;
+}
+
+.nudge .icon-btn {
+  --r-border: var(--border-strong);
+  --r-chip: rgba(255, 255, 255, 0.05);
+  --r-text: var(--text);
+  --r-accent: var(--accent);
+}
+
+.nudge-shield {
+  border-color: var(--accent-2-dim);
+  background: linear-gradient(120deg, rgba(155, 196, 181, 0.14), rgba(155, 196, 181, 0.04));
+}
+
+@keyframes flicker {
+  0%,
+  100% {
+    transform: scale(1) rotate(-3deg);
+  }
+  50% {
+    transform: scale(1.12) rotate(3deg);
+  }
+}
+
+.streak-shields {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--accent-2);
+}
+
+.streak-week li.is-frozen {
+  border-color: var(--accent-2-dim);
+  background: rgba(155, 196, 181, 0.14);
+  font-size: 0.8rem;
+}
+
+.streak-goal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  font-size: 0.78rem;
+}
+
+.streak-goal-foot .inline-link {
+  font-size: 0.78rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.reminder {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.reminder-time {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.reminder-time input {
+  padding: 0.35rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  color-scheme: dark;
+}
+
+.reminder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.reminder-actions .btn,
+.reminder-push {
+  font-size: 0.85rem;
+}
+
+.reminder-push {
+  align-self: flex-start;
+}
+
+.reminder-push.is-on {
+  border-color: var(--accent-2-dim);
+  color: var(--accent-2);
+}
+
+.reminder-note,
+.reminder-status {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.reminder-status {
+  color: var(--accent-2);
+}
+
+.celebration {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(8, 6, 4, 0.55);
+  animation: fade-in 0.25s ease both;
+  cursor: pointer;
+}
+
+.celebration-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 340px;
+  padding: 1.6rem 1.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--accent-dim);
+  background: var(--surface);
+  color: var(--text);
+  text-align: center;
+  box-shadow: var(--shadow-elevated), 0 0 80px rgba(228, 184, 106, 0.25);
+  animation: pop 0.5s var(--ease-out) both;
+}
+
+.celebration-card strong {
+  font-family: var(--font-read);
+  font-size: 1.45rem;
+  line-height: 1.25;
+}
+
+.celebration-card span {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.celebration-emoji {
+  font-size: 3.4rem;
+  line-height: 1;
+  color: inherit !important;
+  animation: bounce 1s var(--ease-out) 0.2s both;
+}
+
+.celebration-burst {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+.celebration-burst i {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: rotate(calc(var(--i) * 25.7deg)) translateY(0);
+  opacity: 0;
+  animation: burst 1.6s var(--ease-out) 0.15s forwards;
+}
+
+.celebration-burst i:nth-child(3n) {
+  background: var(--accent-2);
+  border-radius: 50%;
+}
+
+.celebration-burst i:nth-child(3n + 1) {
+  background: #e8a8c8;
+}
+
+@keyframes burst {
+  0% {
+    opacity: 1;
+    transform: rotate(calc(var(--i) * 25.7deg)) translateY(0) scale(1);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(calc(var(--i) * 25.7deg)) translateY(-190px) scale(0.6);
+  }
+}
+
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes bounce {
+  0% {
+    transform: scale(0.3);
+  }
+  60% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nudge-emoji,
+  .celebration-card,
+  .celebration-emoji,
+  .celebration-burst i {
+    animation: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .nudge {
+    flex-wrap: wrap;
+  }
+
+  .nudge .btn {
+    width: 100%;
+  }
+
+  .nudge .icon-btn {
+    align-self: flex-start;
+  }
+
+  .nudge-shield {
+    flex-wrap: nowrap;
+  }
+}
+
+/* ---- Aviso de versão nova (app instalado) ---- */
+
+.update-banner {
+  position: fixed;
+  z-index: 65;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  translate: -50% 0;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 0.55rem 0.6rem 0.55rem 1rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--accent-dim);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  box-shadow: var(--shadow-elevated);
+  animation: rise 0.3s var(--ease-out) both;
+}
+
+.update-banner .btn {
+  flex-shrink: 0;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.82rem;
+}
+
+/* ---- Retrato dos personagens (por cima da inicial) ---- */
+
+.avatar-photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Ilustrações de cena: os rostos costumam estar na parte de cima. */
+  object-position: 50% 22%;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.4s var(--ease-out);
+}
+
+.avatar-photo.is-loaded {
+  opacity: 1;
 }

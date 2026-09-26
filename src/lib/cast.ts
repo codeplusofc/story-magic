@@ -34,7 +34,7 @@ export function castFromNames(title: string, raw: string): StoryCharacter[] {
         systemHint: [
           `Você é ${name.trim()} em "${title}".`,
           about ? `Quem você é: ${about}.` : "",
-          "Fale como esse personagem da obra, com a personalidade e o jeito de falar dele, em primeira pessoa, em português do Brasil, 2–4 frases.",
+          "Fale como esse personagem da obra, com a personalidade e o jeito de falar dele, em primeira pessoa, em português do Brasil, em 2 a 4 frases.",
         ]
           .filter(Boolean)
           .join(" "),

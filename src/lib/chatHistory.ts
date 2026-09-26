@@ -1,3 +1,5 @@
+import { naturalizeReply } from "./naturalSpeech";
+
 /** Conversa com os personagens de cada livro, guardada no navegador para continuar depois. */
 
 export type ChatMsg = { id: string; role: "user" | "assistant"; text: string };
@@ -14,7 +16,12 @@ export function loadChat(bookId: string): SavedChat | null {
   try {
     const raw = localStorage.getItem(KEY(bookId));
     const saved = raw ? (JSON.parse(raw) as SavedChat) : null;
-    return saved && typeof saved.threads === "object" ? saved : null;
+    if (!saved || typeof saved.threads !== "object") return null;
+    // Conversas guardadas antes da limpeza de estilo (travessões, *ações*) aparecem já limpas.
+    for (const msgs of Object.values(saved.threads)) {
+      for (const m of msgs) if (m.role === "assistant") m.text = naturalizeReply(m.text);
+    }
+    return saved;
   } catch {
     return null;
   }

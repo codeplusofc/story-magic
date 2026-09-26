@@ -32,6 +32,12 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
 - **Marcações e citações favoritas**: selecione um trecho e toque em *Destacar*; o painel de marcações leva de volta ao trecho e compartilha como imagem.
 - **Significado da palavra**: selecione uma palavra — em inglês, mostra a tradução e a definição do Wiktionary; em português, a definição do Wikcionário.
 - **Sequência e meta de leitura**: dias seguidos lendo, os últimos 7 dias e uma meta diária de minutos (5 a 30), contados só com o leitor ativo.
+- **Engajamento no estilo Duolingo** (sem servidor e sem IA):
+  - aviso no topo quando a sequência vai acabar ("Sua sequência de 5 dias termina hoje!");
+  - escudos: 1 a cada 7 dias seguidos (máximo 2), que salvam a sequência num dia sem leitura;
+  - comemorações: sequência do dia, meta cumprida, capítulo concluído e livro terminado;
+  - o personagem manda uma mensagem de saudade quando o leitor volta ao livro depois de 2 dias ou mais.
+- **Lembrete diário**: evento no Google Agenda ou arquivo `.ics` (iPhone, Outlook), no horário escolhido. No Android com o app instalado, o service worker também mostra uma notificação quando o leitor ainda não leu no dia (o horário é decidido pelo navegador, via *periodic background sync*).
 - **App instalável (PWA)**: "Adicionar à tela inicial" com ícone próprio; a página e os livros já abertos funcionam sem internet.
 - **Acesso protegido**: é preciso criar uma conta ou fazer login para abrir livros, importar arquivos e acessar a leitura.
 
@@ -75,7 +81,8 @@ src/
     ├── speech.ts           Leitura em voz alta (Web Speech API)
     ├── highlights.ts       Marcações e citações
     ├── dictionary.ts       Significado de palavras (Wiktionary/Wikcionário)
-    ├── readingStats.ts     Tempo de leitura, sequência de dias e meta
+    ├── readingStats.ts     Tempo de leitura, sequência de dias, meta e escudos
+    ├── reminders.ts        Lembrete no calendário e notificação diária (Android)
     ├── pwa.ts              Service worker e convite de instalação
     ├── readingContext.ts   Trecho do livro perto da posição de leitura
     └── readingAmbient.ts   Mensagens automáticas ao trocar e ao passar do meio do capítulo

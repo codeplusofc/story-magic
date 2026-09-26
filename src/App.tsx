@@ -38,17 +38,36 @@ import {
   saveProgress,
   type ReadingProgress,
 } from "./lib/progress";
-import { chapterTransitionMessage, midChapterReadingHint } from "./lib/readingAmbient";
+import { chapterTransitionMessage, midChapterReadingHint, missYouMessage } from "./lib/readingAmbient";
 import { searchOutsideCatalog, type BookHint } from "./lib/openLibrary";
+import { cachedPortrait, requestPortrait } from "./lib/portraits";
 import { excerptNearScrollRatio } from "./lib/readingContext";
 import {
   addReadingSeconds,
   GOAL_OPTIONS,
   hasAnyReading,
+  lastReadDay,
   readingSummary,
+  reconcileStreak,
   setReadingGoalMinutes,
+  takeShieldNotice,
+  type ReadingEvents,
 } from "./lib/readingStats";
-import { useInstallPrompt } from "./lib/pwa";
+import {
+  disableDailyNotifications,
+  downloadIcs,
+  enableDailyNotifications,
+  googleCalendarUrl,
+  lastCharacter,
+  loadReminderPrefs,
+  notificationSupport,
+  rememberCharacter,
+  reminderText,
+  saveReminderPrefs,
+  sendTestNotification,
+  syncEngagementState,
+} from "./lib/reminders";
+import { useInstallPrompt, useUpdateReady } from "./lib/pwa";
 import { renderShareCard, shareOrDownload, type ShareCardInput } from "./lib/shareCard";
 import {
   listVoices,
@@ -186,7 +205,44 @@ function withItalics(text: string): React.ReactNode {
   return parts.length === 1 ? text : parts.map((p, i) => (i % 2 === 1 ? <em key={i}>{p}</em> : p));
 }
 
-function Avatar({ character, size = "md" }: { character: StoryCharacter; size?: "sm" | "md" | "lg" }) {
+/**
+ * Avatar do personagem: a inicial do nome e, por cima, o retrato (ilustração livre ou gerada),
+ * quando houver. `generate` pede o retrato se ainda não existir (no leitor); sem ele, só mostra
+ * retratos já guardados neste aparelho (página inicial, para não disparar dezenas de pedidos).
+ */
+function Avatar({
+  character,
+  size = "md",
+  bookTitle,
+  generate = false,
+}: {
+  character: StoryCharacter;
+  size?: "sm" | "md" | "lg";
+  bookTitle?: string;
+  generate?: boolean;
+}) {
+  const [src, setSrc] = useState<string | null>(() => (bookTitle ? cachedPortrait(character, bookTitle) : null));
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (!bookTitle) return;
+    const cached = cachedPortrait(character, bookTitle);
+    if (cached) {
+      setSrc(cached);
+      return;
+    }
+    setSrc(null);
+    setLoaded(false);
+    if (!generate) return;
+    let alive = true;
+    void requestPortrait(character, bookTitle).then((url) => {
+      if (alive && url) setSrc(url);
+    });
+    return () => {
+      alive = false;
+    };
+    // O objeto do personagem muda a cada render; nome e id bastam.
+  }, [character.id, character.name, bookTitle, generate]);
+
   return (
     <span
       className={`avatar avatar-${size}`}
@@ -194,6 +250,16 @@ function Avatar({ character, size = "md" }: { character: StoryCharacter; size?: 
       aria-hidden="true"
     >
       {shortNameOf(character).replace(/^(O|A|Mr\.|Mrs\.|Dr\.)\s+/i, "").charAt(0).toUpperCase()}
+      {src ? (
+        <img
+          className={`avatar-photo ${loaded ? "is-loaded" : ""}`}
+          src={src}
+          alt=""
+          loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => setSrc(null)}
+        />
+      ) : null}
     </span>
   );
 }
@@ -773,9 +839,80 @@ function MyBooks({
   );
 }
 
-/** Sequência de dias lendo, semana e meta diária de minutos. */
-function ReadingStreak() {
+type LastBook = { title: string; chapterLabel?: string; character?: string };
+
+/** Lembrete diário: calendário (qualquer aparelho) e notificação (Android com o app instalado). */
+function ReminderSetup({ lastBook }: { lastBook?: LastBook }) {
+  const [prefs, setPrefs] = useState(loadReminderPrefs);
+  const [status, setStatus] = useState<string | null>(null);
+  const support = notificationSupport();
+  const text = reminderText(lastBook);
+
+  const update = (p: typeof prefs) => {
+    setPrefs(p);
+    saveReminderPrefs(p);
+  };
+
+  async function toggleNotifications() {
+    if (prefs.notifications) {
+      await disableDailyNotifications();
+      update({ ...prefs, notifications: false });
+      setStatus("Notificações desligadas.");
+      return;
+    }
+    const result = await enableDailyNotifications();
+    if (result === "enabled") {
+      update({ ...prefs, notifications: true });
+      setStatus("Pronto! Veja um exemplo de como o lembrete vai chegar.");
+      void sendTestNotification();
+    } else if (result === "denied") {
+      setStatus("As notificações foram bloqueadas. Libere nas configurações do navegador para este site.");
+    } else {
+      setStatus("Este aparelho não permite lembretes automáticos. Use o calendário acima.");
+    }
+  }
+
+  return (
+    <div className="reminder">
+      <label className="reminder-time">
+        Todo dia às
+        <input
+          type="time"
+          value={prefs.time}
+          onChange={(e) => e.target.value && update({ ...prefs, time: e.target.value })}
+        />
+      </label>
+      <div className="reminder-actions">
+        <a className="btn" href={googleCalendarUrl(prefs.time, text)} target="_blank" rel="noreferrer">
+          Google Agenda
+        </a>
+        <button type="button" className="btn" onClick={() => downloadIcs(prefs.time, text)}>
+          iPhone / outro calendário
+        </button>
+      </div>
+      <p className="reminder-note">
+        O calendário do seu celular avisa todo dia no horário escolhido: <em>“{text.details}”</em>
+      </p>
+
+      {support === "supported" ? (
+        <button type="button" className={`btn reminder-push ${prefs.notifications ? "is-on" : ""}`} onClick={() => void toggleNotifications()}>
+          {prefs.notifications ? "🔔 Notificações ligadas — desligar" : "🔔 Receber notificações do app"}
+        </button>
+      ) : support === "install-first" ? (
+        <p className="reminder-note">
+          <strong>Instale o app</strong> (botão “Instalar”) para receber também notificações automáticas quando você
+          esquecer de ler.
+        </p>
+      ) : null}
+      {status ? <p className="reminder-status" role="status">{status}</p> : null}
+    </div>
+  );
+}
+
+/** Sequência de dias lendo, semana, escudos, meta diária de minutos e lembrete. */
+function ReadingStreak({ lastBook }: { lastBook?: LastBook }) {
   const [summary, setSummary] = useState(readingSummary);
+  const [reminderOpen, setReminderOpen] = useState(false);
   const pct = Math.min(100, (summary.todayMinutes / summary.goalMinutes) * 100);
   const goalDone = summary.todayMinutes >= summary.goalMinutes;
   return (
@@ -795,6 +932,14 @@ function ReadingStreak() {
                 ? "Leia hoje para não perder a sequência."
                 : "Leia um pouco hoje para começar uma sequência."}
           </span>
+          <span
+            className="streak-shields"
+            title="A cada 7 dias seguidos você ganha um escudo (até 2). Se um dia passar sem leitura, ele salva a sua sequência."
+          >
+            {summary.shields > 0
+              ? `🛡️ ${summary.shields} ${summary.shields === 1 ? "escudo" : "escudos"} protegendo a sequência`
+              : "🛡️ Ganhe um escudo a cada 7 dias seguidos"}
+          </span>
         </div>
       </div>
 
@@ -802,10 +947,10 @@ function ReadingStreak() {
         {summary.week.map((d, i) => (
           <li
             key={i}
-            className={[d.read ? "is-read" : "", d.today ? "is-today" : ""].filter(Boolean).join(" ") || undefined}
-            aria-label={`${d.today ? "Hoje" : d.label}: ${d.read ? "leu" : "não leu"}`}
+            className={[`is-${d.state}`, d.today ? "is-today" : ""].filter(Boolean).join(" ")}
+            aria-label={`${d.today ? "Hoje" : d.label}: ${d.state === "read" ? "leu" : d.state === "frozen" ? "salvo por escudo" : "não leu"}`}
           >
-            {d.label}
+            {d.state === "frozen" ? "🛡️" : d.label}
           </li>
         ))}
       </ol>
@@ -821,26 +966,41 @@ function ReadingStreak() {
         <div className={`streak-bar ${goalDone ? "is-done" : ""}`} aria-hidden="true">
           <span style={{ width: `${pct}%` }} />
         </div>
-        <label className="streak-select">
-          Meta diária
-          <select
-            value={summary.goalMinutes}
-            onChange={(e) => {
-              setReadingGoalMinutes(Number(e.target.value));
-              setSummary(readingSummary());
-            }}
+        <div className="streak-goal-foot">
+          <button
+            type="button"
+            className="inline-link"
+            onClick={() => setReminderOpen((v) => !v)}
+            aria-expanded={reminderOpen}
           >
-            {GOAL_OPTIONS.map((m) => (
-              <option key={m} value={m}>
-                {m} min
-              </option>
-            ))}
-          </select>
-        </label>
+            🔔 Lembrete diário
+          </button>
+          <label className="streak-select">
+            Meta diária
+            <select
+              value={summary.goalMinutes}
+              onChange={(e) => {
+                setReadingGoalMinutes(Number(e.target.value));
+                setSummary(readingSummary());
+              }}
+            >
+              {GOAL_OPTIONS.map((m) => (
+                <option key={m} value={m}>
+                  {m} min
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
+
+      {reminderOpen ? <ReminderSetup lastBook={lastBook} /> : null}
     </section>
   );
 }
+
+/** Comemoração no centro da tela (meta do dia, sequência, livro terminado). */
+type Celebration = { emoji: string; title: string; text?: string };
 
 /** Quantos livros "Continue lendo" mostra antes de "Ver todos". */
 const CONTINUE_PREVIEW = 4;
@@ -1092,6 +1252,17 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
       </section>
     </div>
   );
+/**
+ * Aplica os escudos uma vez por carregamento da página, antes de desenhar qualquer coisa (assim o
+ * quadro da sequência já mostra o dia salvo). Devolve o tamanho da sequência salva, para o aviso.
+ */
+let shieldNoticeCache: number | null | undefined;
+function shieldNoticeOnLoad(): number | null {
+  if (shieldNoticeCache === undefined) {
+    const r = reconcileStreak();
+    shieldNoticeCache = r.shieldsUsed > 0 && takeShieldNotice() ? r.streak : null;
+  }
+  return shieldNoticeCache;
 }
 
 export function App() {
@@ -1187,6 +1358,16 @@ export function App() {
   /** No celular o chat abre como painel por cima do texto. */
   const [chatOpen, setChatOpen] = useState(false);
   const [messagesLeft, setMessagesLeft] = useState(messagesLeftToday);
+  const [celebration, setCelebration] = useState<Celebration | null>(null);
+  useEffect(() => {
+    if (!celebration) return;
+    const t = window.setTimeout(() => setCelebration(null), 4200);
+    return () => window.clearTimeout(t);
+  }, [celebration]);
+  /** Ao abrir o app: escudos salvam a sequência de ontem, se preciso (aviso uma vez por dia). */
+  const [shieldNotice, setShieldNotice] = useState<number | null>(shieldNoticeOnLoad);
+  /** Capítulos já comemorados nesta visita (para não repetir a cada rolagem). */
+  const finishedChaptersRef = useRef(new Set<string>());
   /** Aviso curto no rodapé da tela ("Imagem salva", "Trecho destacado"). */
   const [toast, setToast] = useState<string | null>(null);
   useEffect(() => {
@@ -1230,6 +1411,27 @@ export function App() {
   const [, setHomeTick] = useState(0);
   const [importRequest, setImportRequest] = useState<BookHint | Record<string, never> | null>(null);
   const { install } = useInstallPrompt();
+  const updateReady = useUpdateReady();
+  const updateBanner = updateReady ? (
+    <div className="update-banner" role="status">
+      <span>✨ Nova versão do Storyverse disponível.</span>
+      <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
+        Atualizar
+      </button>
+    </div>
+  ) : null;
+  /** Dados para a notificação diária do Android (o service worker não lê o localStorage). */
+  useEffect(() => {
+    if (book) return;
+    const recent = recentProgress()[0];
+    void syncEngagementState({
+      streak: readingSummary().streak,
+      lastReadDay: lastReadDay(),
+      book: recent
+        ? { title: recent.book.title, chapterLabel: recent.chapterLabel, character: lastCharacter(recent.book.id) }
+        : undefined,
+    });
+  }, [book]);
   useEffect(() => {
     try {
       localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
@@ -1284,6 +1486,9 @@ export function App() {
         }
         setFullText(text);
         setLoadState("ready");
+        // Voltou depois de dias sem abrir este livro: o personagem manda uma mensagem de saudade.
+        const awayDays = saved ? Math.floor((Date.now() - saved.updatedAt) / 86_400_000) : 0;
+        const awayChapter = saved?.chapterLabel;
         return loadCast(book, text.slice(0, 3000)).then((list) => {
           if (cancelled) return;
           setCast(list);
@@ -1298,7 +1503,15 @@ export function App() {
                 ),
           );
           const savedActive = saved?.activeCharId && list.some((c) => c.id === saved.activeCharId);
-          setActiveCharId((id) => id || (savedActive ? saved!.activeCharId : list[0]?.id) || "");
+          const activeId = savedActive ? saved!.activeCharId : list[0]?.id;
+          setActiveCharId((id) => id || activeId || "");
+          if (awayDays >= 2 && awayChapter && activeId) {
+            const line = missYouMessage(awayChapter, awayDays);
+            setThreads((prev) => ({
+              ...prev,
+              [activeId]: [...(prev[activeId] ?? []), { id: uid(), role: "assistant", text: line }],
+            }));
+          }
         });
       })
       .catch((err) => {
@@ -1426,10 +1639,35 @@ export function App() {
     const TICK = 15;
     const t = window.setInterval(() => {
       const active = Date.now() - lastActivityRef.current < 120_000 || speechRef.current !== null;
-      if (document.visibilityState === "visible" && active) addReadingSeconds(TICK);
+      if (document.visibilityState === "visible" && active) celebrate(addReadingSeconds(TICK));
     }, TICK * 1000);
     return () => window.clearInterval(t);
   }, [book, loadState]);
+
+  function celebrate(ev: ReadingEvents) {
+    if (ev.dayCompleted) {
+      const n = ev.streak;
+      const milestone = [3, 7, 14, 30, 50, 100, 365].includes(n);
+      setCelebration({
+        emoji: "🔥",
+        title: n === 1 ? "Sequência começou!" : `${n} dias seguidos!`,
+        text: ev.shieldEarned
+          ? "Você ganhou um escudo 🛡️: se um dia passar sem leitura, ele salva a sua sequência."
+          : milestone
+            ? "Que marca! Os personagens estão orgulhosos."
+            : n === 1
+              ? "Volte amanhã para manter o fogo aceso."
+              : "Continue assim — volte amanhã para manter a sequência.",
+      });
+    } else if (ev.goalReached) {
+      setCelebration({ emoji: "🎯", title: "Meta do dia cumprida!", text: "Você leu tudo o que planejou hoje." });
+    }
+  }
+
+  /** Guarda com quem o leitor conversou por último (usado no texto dos lembretes). */
+  useEffect(() => {
+    if (book && character) rememberCharacter(book.id, character.name);
+  }, [book, character]);
 
   /** A voz para ao sair do livro ou fechar a página. */
   useEffect(() => () => speechRef.current?.stop(), []);
@@ -1484,6 +1722,22 @@ export function App() {
     );
     return () => clearTimeout(t);
   }, [book, loadState, chapterIndex, currentChapter, chapters.length, scrollRatio]);
+
+  /** Chegou ao fim do capítulo: aviso rápido; no último capítulo, comemoração de livro terminado. */
+  useEffect(() => {
+    if (!book || loadState !== "ready" || !currentChapter || scrollRatio < 0.97) return;
+    const key = `${book.gutenbergId}:${chapterIndex}`;
+    if (finishedChaptersRef.current.has(key)) return;
+    // Capítulo curtíssimo cabe na tela inteira: ainda não foi "lido".
+    const el = readRef.current;
+    if (!el || el.scrollHeight < el.clientHeight * 1.5) return;
+    finishedChaptersRef.current.add(key);
+    if (chapterIndex >= chapters.length - 1) {
+      setCelebration({ emoji: "🏆", title: `Você terminou “${book.title}”!`, text: "Que jornada. Conte para os personagens o que achou do final." });
+    } else {
+      setToast(`✓ ${currentChapter.label} concluído`);
+    }
+  }, [book, loadState, currentChapter, scrollRatio, chapterIndex, chapters.length]);
 
   /** Ao trocar de personagem, não dispara de novo a dica do meio se a rolagem já passou do meio. */
   useEffect(() => {
@@ -1957,6 +2211,14 @@ export function App() {
 
   if (!book) {
     const recent = recentProgress();
+    const summary = readingSummary();
+    const lastBook = recent[0]
+      ? {
+          title: recent[0].book.title,
+          chapterLabel: recent[0].chapterLabel,
+          character: lastCharacter(recent[0].book.id),
+        }
+      : undefined;
     const progressById = new Map(recent.map((p) => [p.book.gutenbergId, p]));
     const heroBook = featuredBooks.find((b) => b.demo && b.characters?.length);
     const heroChar = heroBook?.characters?.[0];
@@ -1975,9 +2237,7 @@ export function App() {
         ) : null}
         <nav className="home-nav">
           <span className="wordmark">
-            <span className="wordmark-mark" aria-hidden="true">
-              ✦
-            </span>
+            <img className="wordmark-mark" src="/icons/icon.svg" alt="" aria-hidden="true" />
             Storyverse
           </span>
           <div className="home-nav-actions">
@@ -2025,6 +2285,39 @@ export function App() {
             <span>Instale o Storyverse no celular: abre em tela cheia e funciona sem internet.</span>
             <button type="button" className="btn btn-primary" onClick={() => void install()}>
               Instalar
+            </button>
+          </div>
+        ) : null}
+
+        {shieldNotice !== null ? (
+          <div className="nudge nudge-shield" role="status">
+            <span className="nudge-emoji" aria-hidden="true">
+              🛡️
+            </span>
+            <div>
+              <strong>Um escudo salvou sua sequência!</strong>
+              <span>Você não leu ontem, mas a sequência de {shieldNotice} dias continua. Bora ler hoje?</span>
+            </div>
+            <button type="button" className="icon-btn" onClick={() => setShieldNotice(null)} aria-label="Fechar aviso">
+              {Icon.close}
+            </button>
+          </div>
+        ) : summary.streak > 0 && !summary.readToday && recent[0] ? (
+          <div className="nudge" role="status">
+            <span className="nudge-emoji" aria-hidden="true">
+              🔥
+            </span>
+            <div>
+              <strong>
+                Sua sequência de {summary.streak} {summary.streak === 1 ? "dia" : "dias"} termina hoje!
+              </strong>
+              <span>
+                {lastBook?.character ? `${lastBook.character} está te esperando` : "Sua história está te esperando"} em “
+                {recent[0].book.title}”. Uns minutinhos já contam.
+              </span>
+            </div>
+            <button type="button" className="btn btn-primary" onClick={() => startBook(recent[0].book)}>
+              Ler agora
             </button>
           </div>
         ) : null}
@@ -2080,7 +2373,7 @@ export function App() {
               </div>
               <div className="demo-chat">
                 <div className="demo-chat-head">
-                  <Avatar character={heroChar} size="sm" />
+                  <Avatar character={heroChar} size="sm" bookTitle={heroBook.title} />
                   <div>
                     <strong>{heroChar.name}</strong>
                     <small>{heroBook.title}</small>
@@ -2112,7 +2405,7 @@ export function App() {
           </div>
         </section>
 
-        {recent.length > 0 || hasAnyReading() ? <ReadingStreak /> : null}
+        {recent.length > 0 || hasAnyReading() ? <ReadingStreak lastBook={lastBook} /> : null}
 
         {recent.length > 0 ? <ContinueReading items={recent} onOpen={startBook} /> : null}
 
@@ -2167,7 +2460,7 @@ export function App() {
                         <div className="book-cast">
                           <span className="avatar-stack">
                             {b.characters.map((c) => (
-                              <Avatar key={c.id} character={c} size="sm" />
+                              <Avatar key={c.id} character={c} size="sm" bookTitle={b.title} />
                             ))}
                           </span>
                           <span>Converse com {listNames(b.characters.map(shortNameOf))}</span>
@@ -2203,6 +2496,25 @@ export function App() {
             </div>
           </>
         ) : null}
+
+        {celebration ? (
+          <div className="celebration" role="status" onClick={() => setCelebration(null)}>
+            <div className="celebration-card">
+              <span className="celebration-emoji" aria-hidden="true">
+                {celebration.emoji}
+              </span>
+              <strong>{celebration.title}</strong>
+              {celebration.text ? <span>{celebration.text}</span> : null}
+            </div>
+            <div className="celebration-burst" aria-hidden="true">
+              {Array.from({ length: 14 }, (_, i) => (
+                <i key={i} style={{ "--i": i } as React.CSSProperties} />
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {updateBanner}
 
         <footer className="home-foot">
           Storyverse · leitura que conversa com você · textos em domínio público do{" "}
@@ -2672,6 +2984,25 @@ export function App() {
           </div>
         ) : null}
 
+        {celebration ? (
+          <div className="celebration" role="status" onClick={() => setCelebration(null)}>
+            <div className="celebration-card">
+              <span className="celebration-emoji" aria-hidden="true">
+                {celebration.emoji}
+              </span>
+              <strong>{celebration.title}</strong>
+              {celebration.text ? <span>{celebration.text}</span> : null}
+            </div>
+            <div className="celebration-burst" aria-hidden="true">
+              {Array.from({ length: 14 }, (_, i) => (
+                <i key={i} style={{ "--i": i } as React.CSSProperties} />
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {updateBanner}
+
         {toast || sharing ? (
           <div className="toast" role="status">
             {sharing ? "Gerando a imagem…" : toast}
@@ -2681,7 +3012,7 @@ export function App() {
         <aside className={`chat ${chatOpen ? "is-open" : ""}`} aria-label="Conversa com os personagens">
           {character ? (
             <div className="chat-head">
-              <Avatar character={character} size="lg" />
+              <Avatar character={character} size="lg" bookTitle={book.title} generate />
               <div className="chat-head-text">
                 <strong>{character.name}</strong>
                 <span>{character.role}</span>
@@ -2736,7 +3067,7 @@ export function App() {
                   style={{ "--c": c.color } as React.CSSProperties}
                   onClick={() => setActiveCharId(c.id)}
                 >
-                  <Avatar character={c} size="sm" />
+                  <Avatar character={c} size="sm" bookTitle={book.title} generate />
                   {shortNameOf(c)}
                 </button>
               ))}
@@ -2747,7 +3078,7 @@ export function App() {
             {messages.map((m) =>
               m.role === "assistant" && character ? (
                 <div key={m.id} className="msg msg-assistant">
-                  <Avatar character={character} size="sm" />
+                  <Avatar character={character} size="sm" bookTitle={book.title} generate />
                   <div className="bubble assistant">{m.text}</div>
                   <button
                     type="button"
@@ -2767,7 +3098,7 @@ export function App() {
             )}
             {loading && character ? (
               <div className="msg msg-assistant">
-                <Avatar character={character} size="sm" />
+                <Avatar character={character} size="sm" bookTitle={book.title} generate />
                 <div className="bubble assistant typing" aria-label={`${character.name} está escrevendo`}>
                   <span />
                   <span />
@@ -2843,7 +3174,7 @@ export function App() {
               requestAnimationFrame(() => inputRef.current?.focus());
             }}
           >
-            {character ? <Avatar character={character} size="sm" /> : null}
+            {character ? <Avatar character={character} size="sm" bookTitle={book.title} generate /> : null}
             {character ? `Conversar com ${shortNameOf(character)}` : "Conversar"}
           </button>
         ) : null}
