@@ -65,6 +65,16 @@ import {
 } from "./lib/speech";
 import { countMessage, DAILY_MESSAGE_LIMIT, messagesLeftToday } from "./lib/usageLimit";
 import {
+  clearLegacyCredentials,
+  refreshAuthSession,
+  restoreAuthSession,
+  signInWithPassword,
+  signOut,
+  signUpWithPassword,
+  type SupabaseSession,
+  type SupabaseUser,
+} from "./lib/auth";
+import {
   cachedTranslation,
   chunkRanges,
   detectTranslationEngine,
@@ -532,11 +542,13 @@ function Explore({
 function MyBooks({
   onOpen,
   onRemoved,
+  onRequest,
   request,
   setRequest,
 }: {
   onOpen: (b: Ebook) => void;
   onRemoved: () => void;
+  onRequest: () => void;
   /**
    * Formulário aberto (`null` = fechado). Abre pelo topo da página, pelo destaque e pela busca;
    * vindo de um livro "Fora do acervo", já traz título, autor e capa.
@@ -657,7 +669,7 @@ function MyBooks({
       </div>
 
       <div className="result-grid">
-        <button type="button" className="result" onClick={() => setRequest({})}>
+        <button type="button" className="result" onClick={onRequest}>
           <div className="cover import-cover" aria-hidden="true">
             <span className="import-plus">+</span>
             <span className="import-formats">EPUB · PDF · TXT</span>
@@ -878,8 +890,286 @@ function ContinueReading({ items, onOpen }: { items: ReadingProgress[]; onOpen: 
   );
 }
 
+function AuthModal({
+  mode,
+  onClose,
+  onAuthenticated,
+}: {
+  mode: "login" | "register";
+  onClose: () => void;
+  onAuthenticated: (session: SupabaseSession) => void;
+}) {
+  const [kind, setKind] = useState(mode);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isFlipping, setIsFlipping] = useState(false);
+
+  function switchKind() {
+    setIsFlipping(true);
+    setKind(kind === "login" ? "register" : "login");
+    setError("");
+    setSuccess("");
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setError("Informe um endereço de e-mail válido.");
+      return;
+    }
+    if (!password || (kind === "register" && password.length < 6)) {
+      setError(kind === "register" ? "A senha precisa ter pelo menos 6 caracteres." : "Informe sua senha.");
+      return;
+    }
+    if (kind === "register" && !name.trim()) {
+      setError("Informe seu nome.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setSuccess("");
+    try {
+      if (kind === "register") {
+        const result = await signUpWithPassword(normalizedEmail, password, name.trim());
+        if (result.session) {
+          onAuthenticated(result.session);
+        } else {
+          setSuccess("Conta criada. Verifique seu e-mail para confirmar o cadastro e depois faça login.");
+        }
+      } else {
+        onAuthenticated(await signInWithPassword(normalizedEmail, password));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Não foi possível concluir a autenticação.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="auth-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <section
+        className={`auth-card auth-card-enter ${isFlipping ? "is-flipping" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-title"
+        onAnimationEnd={() => setIsFlipping(false)}
+      >
+        <button type="button" className="auth-close" onClick={onClose} aria-label="Fechar">
+          {Icon.close}
+        </button>
+        <span className="eyebrow">Storyverse</span>
+        <h2 id="auth-title">{kind === "login" ? "Entre para continuar lendo" : "Crie sua conta gratuita"}</h2>
+        <p className="auth-subtitle">
+          {kind === "login"
+            ? "Acesse seus livros, progresso e conversas com os personagens."
+            : "Salve seu progresso e converse com os personagens no seu ritmo."}
+        </p>
+        <form onSubmit={submit} className="auth-form">
+          {kind === "register" ? (
+            <label>
+              Nome
+              <input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required disabled={loading} />
+            </label>
+          ) : null}
+          <label>
+            E-mail
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required disabled={loading} />
+          </label>
+          <label>
+            Senha
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={kind === "login" ? "current-password" : "new-password"} minLength={kind === "register" ? 6 : undefined} required disabled={loading} />
+          </label>
+          {error ? <p className="auth-error" role="alert">{error}</p> : null}
+          {success ? <p className="auth-success" role="status">{success}</p> : null}
+          <button type="submit" className="btn btn-primary btn-lg" disabled={loading}>
+            {loading ? "Aguarde..." : kind === "login" ? "Fazer login" : "Criar conta"}
+          </button>
+        </form>
+        <p className="auth-switch">
+          {kind === "login" ? "Ainda não tem conta?" : "Já tem uma conta?"}{" "}
+          <button type="button" className="inline-link" onClick={switchKind} disabled={loading}>
+            {kind === "login" ? "Criar conta" : "Fazer login"}
+          </button>
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function AboutDialog({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="about-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <section className="about-dialog" role="dialog" aria-modal="true" aria-labelledby="sobre-title">
+        <header className="about-dialog-head">
+          <div>
+            <span className="eyebrow">Sobre o Storyverse</span>
+            <h2 id="sobre-title">Entre na história. Converse com quem vive nela.</h2>
+          </div>
+          <button type="button" className="auth-close" onClick={onClose} aria-label="Fechar sobre">
+            {Icon.close}
+          </button>
+        </header>
+        <div className="about-copy">
+          <p>Ler um livro não precisa ser uma experiência solitária.</p>
+          <p>
+            O <strong>Storyverse</strong> transforma a leitura em uma experiência interativa, onde as
+            histórias ganham voz e os personagens deixam de ser apenas palavras na página.
+          </p>
+          <p>
+            Enquanto você lê, os personagens acompanham o ponto da história em que você está e podem
+            conversar com você em um chat ao lado do livro. Pergunte, provoque, descubra o que eles
+            pensam ou simplesmente converse com eles.
+          </p>
+          <p>
+            Quer saber o que Isaura sente diante de Leôncio? Pergunte. Quer provocar Sherlock Holmes?
+            Vá em frente. Quer ouvir o que Drácula teria a dizer? Ele está esperando.
+          </p>
+          <p>
+            E existe uma regra importante: <strong>ninguém conta o que ainda não aconteceu.</strong> Os
+            personagens conhecem apenas o momento da história que você já alcançou, mantendo a
+            experiência livre de spoilers.
+          </p>
+          <h3>📚 Descubra. Leia. Converse.</h3>
+          <p>
+            No Storyverse, você encontra clássicos em domínio público, com destaque para romances,
+            terror, vampiros e grandes histórias da literatura.
+          </p>
+          <ul>
+            <li>💬 Conversar com os personagens da história;</li>
+            <li>📖 Ler capítulo por capítulo sem perder seu progresso;</li>
+            <li>🌙 Escolher entre modo noturno e sépia;</li>
+            <li>🔊 Ouvir o livro em voz alta;</li>
+            <li>⭐ Destacar seus trechos favoritos;</li>
+            <li>📌 Salvar citações e momentos marcantes;</li>
+            <li>🔎 Descobrir o significado de palavras;</li>
+            <li>🔥 Acompanhar sua sequência e suas metas de leitura;</li>
+            <li>📱 Continuar lendo pelo celular, inclusive offline;</li>
+            <li>🖼️ Compartilhar seus momentos favoritos como imagens.</li>
+          </ul>
+          <h3>✨ E se o livro não estiver na estante?</h3>
+          <p>
+            O Storyverse também permite <strong>importar seus próprios livros</strong> em EPUB, PDF ou
+            TXT. O livro permanece no seu navegador, e você pode transformá-lo em uma experiência
+            interativa com personagens e conversas.
+          </p>
+          <h3>🧠 Histórias que respondem a você</h3>
+          <p>
+            A inteligência artificial não substitui o livro. Ela existe para criar uma nova camada de
+            interação ao redor dele. O texto original continua sendo o texto original: a IA não altera
+            a história, não escreve novos capítulos e não decide o que acontece. Ela simplesmente dá
+            voz aos personagens para que você possa conhecê-los de uma maneira diferente.
+          </p>
+          <p className="about-quote">
+            <strong>Você lê a história.</strong>
+            <br />
+            <strong>Eles vivem nela.</strong>
+            <br />
+            E agora vocês podem conversar.
+          </p>
+          <h3>🌌 Seu próximo capítulo começa aqui.</h3>
+          <p>
+            Escolha um livro, abra o primeiro capítulo e dê o primeiro passo. Talvez você comece
+            querendo apenas ler algumas páginas. Mas, quando um personagem olhar para você e responder...
+            <strong> talvez você não queira mais parar de ler.</strong>
+          </p>
+          <p><strong>Storyverse — Leia o livro. Converse com quem vive nele.</strong></p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function App() {
   const [book, setBook] = useState<Ebook | null>(null);
+  const [authSession, setAuthSession] = useState<SupabaseSession | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authActionLoading, setAuthActionLoading] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const authUser: SupabaseUser | null = authSession?.user ?? null;
+  const [authModal, setAuthModal] = useState<"login" | "register" | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [pausedShelves, setPausedShelves] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        clearLegacyCredentials();
+        const session = await restoreAuthSession();
+        if (!cancelled) setAuthSession(session);
+      } catch (err) {
+        if (!cancelled) {
+          setAuthSession(null);
+          setAuthNotice(err instanceof Error ? err.message : "Não foi possível restaurar sua sessão.");
+        }
+      } finally {
+        if (!cancelled) setAuthLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authSession) return;
+    const refreshIn = Math.max(1000, authSession.expires_at * 1000 - Date.now() - 60_000);
+    const timer = window.setTimeout(() => {
+      void refreshAuthSession(authSession.refresh_token)
+        .then((session) => setAuthSession(session))
+        .catch((err: unknown) => {
+          setAuthSession(null);
+          setAuthNotice(err instanceof Error ? err.message : "Sua sessão expirou. Entre novamente.");
+        });
+    }, refreshIn);
+    return () => window.clearTimeout(timer);
+  }, [authSession]);
+
+  useEffect(() => {
+    function syncSession(event: StorageEvent) {
+      if (event.key !== "storyverse:supabase-session") return;
+      if (!event.newValue) {
+        setAuthSession(null);
+        return;
+      }
+      try {
+        setAuthSession(JSON.parse(event.newValue) as SupabaseSession);
+      } catch {
+        setAuthSession(null);
+      }
+    }
+    window.addEventListener("storage", syncSession);
+    return () => window.removeEventListener("storage", syncSession);
+  }, []);
+
+  async function logout() {
+    if (!authSession || authActionLoading) return;
+    setAuthActionLoading(true);
+    setAuthNotice(null);
+    try {
+      await signOut(authSession);
+    } catch (err) {
+      setAuthNotice(err instanceof Error ? `Sessão encerrada neste dispositivo. ${err.message}` : "Sessão encerrada neste dispositivo.");
+    } finally {
+      setAuthSession(null);
+      setAuthActionLoading(false);
+    }
+  }
 
   const [fullText, setFullText] = useState("");
   const [chapterIndex, setChapterIndex] = useState(0);
@@ -1051,6 +1341,11 @@ export function App() {
   const prevChapterIdxRef = useRef<number | null>(null);
 
   const startBook = useCallback((b: Ebook) => {
+    if (authLoading) return;
+    if (!authUser) {
+      setAuthModal("login");
+      return;
+    }
     prevChapterIdxRef.current = null;
     setBook(b);
     setCast(null);
@@ -1060,7 +1355,19 @@ export function App() {
     setInput("");
     setChatOpen(false);
     window.scrollTo({ top: 0 });
-  }, []);
+  }, [authLoading, authUser]);
+
+  const requestImport = useCallback(
+    (hint: BookHint | Record<string, never> = {}) => {
+      if (authLoading) return;
+      if (!authUser) {
+        setAuthModal("register");
+        return;
+      }
+      setImportRequest(hint);
+    },
+    [authLoading, authUser],
+  );
 
   const stopSpeaking = useCallback(() => {
     speechRef.current?.stop();
@@ -1639,6 +1946,15 @@ export function App() {
     void sendMessage(input);
   }
 
+  if (authLoading && !book) {
+    return (
+      <main className="auth-loading" role="status" aria-live="polite">
+        <span className="wordmark-mark" aria-hidden="true">✦</span>
+        <p>Verificando sua sessão...</p>
+      </main>
+    );
+  }
+
   if (!book) {
     const recent = recentProgress();
     const progressById = new Map(recent.map((p) => [p.book.gutenbergId, p]));
@@ -1646,6 +1962,17 @@ export function App() {
     const heroChar = heroBook?.characters?.[0];
     return (
       <div className="home">
+        {authModal ? (
+          <AuthModal
+            mode={authModal}
+            onClose={() => setAuthModal(null)}
+            onAuthenticated={(session) => {
+              setAuthSession(session);
+              setAuthNotice(null);
+              setAuthModal(null);
+            }}
+          />
+        ) : null}
         <nav className="home-nav">
           <span className="wordmark">
             <span className="wordmark-mark" aria-hidden="true">
@@ -1663,18 +1990,34 @@ export function App() {
                 Instalar app
               </button>
             ) : null}
-            <button
-              type="button"
-              className="btn nav-import"
-              onClick={() => setImportRequest({})}
-              aria-label="Importar livro"
-            >
-              {Icon.upload}
-              <span className="nav-import-long">Importar livro</span>
-              <span className="nav-import-short">Importar</span>
-            </button>
+            {authUser ? (
+              <button
+                type="button"
+                className="btn nav-import"
+                onClick={() => requestImport()}
+                aria-label="Importar livro"
+              >
+                {Icon.upload}
+                <span className="nav-import-long">Importar livro</span>
+                <span className="nav-import-short">Importar</span>
+              </button>
+            ) : null}
+            {authUser ? (
+              <button type="button" className="btn nav-account" onClick={() => void logout()} disabled={authActionLoading}>
+                {authActionLoading ? "Saindo..." : "Sair"}
+              </button>
+            ) : (
+              <>
+                <button type="button" className="btn nav-login" onClick={() => setAuthModal("login")}>Login</button>
+                <button type="button" className="btn btn-primary nav-register" onClick={() => setAuthModal("register")}>Criar conta</button>
+              </>
+            )}
           </div>
         </nav>
+
+        {authNotice ? <p className="auth-global-notice" role="alert">{authNotice}</p> : null}
+
+        {aboutOpen ? <AboutDialog onClose={() => setAboutOpen(false)} /> : null}
 
         {install ? (
           // No celular o convite fica aqui, fora do topo (lá não cabe junto com "Importar livro").
@@ -1705,7 +2048,7 @@ export function App() {
               <a className="btn btn-lg" href="#acervo">
                 Buscar no acervo
               </a>
-              <button type="button" className="btn btn-lg" onClick={() => setImportRequest({})}>
+              <button type="button" className="btn btn-lg" onClick={() => requestImport()}>
                 {Icon.upload}
                 Importar meu livro
               </button>
@@ -1750,6 +2093,7 @@ export function App() {
           ) : null}
         </header>
 
+        <>
         <section className="steps" aria-label="Como funciona">
           <div className="step">
             <span className="step-n">1</span>
@@ -1780,14 +2124,33 @@ export function App() {
               <div className="shelf-head">
                 <h2>{shelf.title}</h2>
                 <p>{shelf.subtitle}</p>
+                {!authUser ? (
+                  <button
+                    type="button"
+                    className="carousel-toggle"
+                    aria-pressed={Boolean(pausedShelves[shelf.id])}
+                    onClick={() =>
+                      setPausedShelves((paused) => ({ ...paused, [shelf.id]: !paused[shelf.id] }))
+                    }
+                  >
+                    {pausedShelves[shelf.id] ? "▶ Retomar" : "Ⅱ Pausar"}
+                  </button>
+                ) : null}
               </div>
-              <div className="shelf-grid">
-                {books.map((b) => (
-                  <article key={b.id} className="book">
+              <div
+                className={authUser ? "shelf-grid" : "book-carousel"}
+                aria-label={authUser ? undefined : `${shelf.title}: carrossel de livros`}
+              >
+                <div className={`${authUser ? "shelf-grid-items" : "book-carousel-track"} ${pausedShelves[shelf.id] ? "is-paused" : ""}`}>
+                {(authUser ? books : [...books, ...books]).map((b, bookIndex) => {
+                  const duplicate = !authUser && bookIndex >= books.length;
+                  return (
+                  <article key={`${b.id}-${bookIndex}`} className="book" aria-hidden={duplicate}>
                     <button
                       type="button"
                       className="book-cover-btn"
                       onClick={() => startBook(b)}
+                      tabIndex={duplicate ? -1 : undefined}
                       aria-label={`Abrir ${b.title}`}
                     >
                       <BookCover book={b} />
@@ -1811,26 +2174,35 @@ export function App() {
                         </div>
                       ) : null}
                       <div className="book-actions">
-                        <button type="button" className="btn btn-primary" onClick={() => startBook(b)}>
+                        <button type="button" className="btn btn-primary" onClick={() => startBook(b)} tabIndex={duplicate ? -1 : undefined}>
                           {progressById.has(b.gutenbergId) ? "Continuar lendo" : "Começar a ler"}
                         </button>
                       </div>
                     </div>
                   </article>
-                ))}
+                  );
+                })}
+                </div>
               </div>
             </section>
           );
         })}
 
-        <MyBooks
-          onOpen={startBook}
-          onRemoved={() => setHomeTick((n) => n + 1)}
-          request={importRequest}
-          setRequest={setImportRequest}
-        />
+        {authUser ? (
+          <>
+            <MyBooks
+              onOpen={startBook}
+              onRemoved={() => setHomeTick((n) => n + 1)}
+              onRequest={() => requestImport()}
+              request={importRequest}
+              setRequest={setImportRequest}
+            />
 
-        <Explore onOpen={startBook} onImport={(hint) => setImportRequest(hint ?? {})} />
+            <div id="recursos">
+              <Explore onOpen={startBook} onImport={(hint) => requestImport(hint ?? {})} />
+            </div>
+          </>
+        ) : null}
 
         <footer className="home-foot">
           Storyverse · leitura que conversa com você · textos em domínio público do{" "}
@@ -1838,9 +2210,13 @@ export function App() {
             Project Gutenberg
           </a>
           <span className="home-credit">
-            Desenvolvido por <strong>Guilherme Pinheiro</strong>
+            Desenvolvido por <strong>Axyon Software House</strong>
           </span>
+          <button type="button" className="footer-about-link" onClick={() => setAboutOpen(true)}>
+            Sobre nós
+          </button>
         </footer>
+        </>
       </div>
     );
   }
