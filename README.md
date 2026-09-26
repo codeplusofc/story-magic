@@ -26,6 +26,7 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
 - **Layout responsivo**: no celular, o chat vira um painel deslizante aberto por um botão flutuante.
 - **Conversa salva por livro**: ao voltar, os personagens lembram do que foi dito (botão para recomeçar a conversa).
 - **Card para compartilhar**: uma fala do personagem (com a pergunta do leitor) ou uma citação do livro vira uma imagem 1080×1350 pronta para Stories, TikTok e WhatsApp, gerada no navegador.
+- **Conta e sessão**: cadastro e login por e-mail e senha via Supabase Auth; a sessão é renovada e mantida entre visitas. Leitura e importações continuam guardadas no aparelho.
 - **Limite de 30 mensagens por dia** por navegador, para proteger a cota das chaves de IA (`DAILY_MESSAGE_LIMIT` em `src/lib/usageLimit.ts`).
 - **Ouvir em voz alta**: lê o capítulo com a voz do próprio aparelho, destacando o parágrafo, com velocidade ajustável e continuação automática no próximo capítulo.
 - **Marcações e citações favoritas**: selecione um trecho e toque em *Destacar*; o painel de marcações leva de volta ao trecho e compartilha como imagem.
@@ -38,6 +39,7 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
   - o personagem manda uma mensagem de saudade quando o leitor volta ao livro depois de 2 dias ou mais.
 - **Lembrete diário**: evento no Google Agenda ou arquivo `.ics` (iPhone, Outlook), no horário escolhido. No Android com o app instalado, o service worker também mostra uma notificação quando o leitor ainda não leu no dia (o horário é decidido pelo navegador, via *periodic background sync*).
 - **App instalável (PWA)**: "Adicionar à tela inicial" com ícone próprio; a página e os livros já abertos funcionam sem internet.
+- **Acesso protegido**: é preciso criar uma conta ou fazer login para abrir livros, importar arquivos e acessar a leitura.
 
 ## Tecnologias
 
@@ -46,6 +48,7 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
 | Interface | React 18 + TypeScript |
 | Build e servidor de desenvolvimento | Vite 5 |
 | Hospedagem | Vercel (site estático + rewrites) |
+| Autenticação | Supabase Auth (REST, direto do cliente; sem backend próprio) |
 | Catálogo de livros | Busca do próprio [gutenberg.org](https://www.gutenberg.org) (feed OPDS), pelo mesmo proxy dos textos |
 | Texto dos livros | Project Gutenberg, via proxy (`/gutenberg` e `/gutenberg-mirror`) |
 | IA principal | [Groq](https://console.groq.com) (`openai/gpt-oss-120b`, `gpt-oss-20b`, `qwen3.8-27b`) |
@@ -53,7 +56,7 @@ O acervo vem do [Project Gutenberg](https://www.gutenberg.org): mais de 70 mil l
 | IA de reserva opcional | [OpenRouter](https://openrouter.ai) |
 | Fontes | Literata (leitura) e Plus Jakarta Sans (interface), do Google Fonts |
 
-Não há backend, nem banco de dados, nem bibliotecas de interface. Todo o estado fica no navegador.
+O app não mantém backend próprio. O Supabase Auth gerencia contas e sessões; livros importados, progresso, conversas e preferências de leitura continuam no navegador. A interface não usa bibliotecas de componentes.
 
 ### Estrutura
 
@@ -148,6 +151,8 @@ npm run dev
 
 | Variável | Obrigatória | Descrição |
 |---|---|---|
+| `VITE_SUPABASE_URL` | sim para login | URL do projeto Supabase |
+| `VITE_SUPABASE_ANON_KEY` | sim para login | Chave publicável/anon do Supabase; nunca use `service_role` no frontend |
 | `VITE_GROQ_API_KEY` | uma das chaves | Chave do Groq (`gsk_...`) |
 | `VITE_GROQ_MODELS` | não | Modelos do Groq em ordem de preferência, separados por vírgula |
 | `VITE_GEMINI_API_KEY` | uma das chaves | Chave do Google AI Studio |
@@ -156,6 +161,15 @@ npm run dev
 | `VITE_OPENROUTER_MODELS` | não | Modelos do OpenRouter (os gratuitos terminam em `:free`) |
 
 O Vite só lê o `.env` ao iniciar: depois de alterar o arquivo, reinicie o `npm run dev`.
+
+### Configuração do Supabase Auth
+
+1. Crie um projeto Supabase e copie a **Project URL** e a chave **anon/publicable** em **Project Settings → API** para `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`.
+2. Em **Authentication → Providers**, habilite o provedor de e-mail e senha. Configure a confirmação de e-mail conforme a política desejada.
+3. Em **Authentication → URL Configuration**, defina a URL do site e inclua os endereços locais/de produção na lista de redirecionamento.
+4. Para testar localmente, copie `.env.example` para `.env`, preencha as duas variáveis e reinicie o Vite.
+
+A chave anon/publicável não é segredo e é enviada pelo navegador para o Supabase; a segurança depende das regras do Supabase. Nunca coloque a chave `service_role` no Vite, no repositório ou no navegador. Nenhuma senha de usuário é armazenada pelo app.
 
 ### Scripts
 
@@ -167,14 +181,16 @@ O Vite só lê o `.env` ao iniciar: depois de alterar o arquivo, reinicie o `npm
 
 ## Deploy (Vercel)
 
-1. Cadastre as variáveis de ambiente em **Settings → Environment Variables** (tipo **Config**, porque o prefixo `VITE_` torna o valor público).
-2. Faça o push para a `main`: o Vercel gera o build automaticamente.
-3. Se mudar alguma variável, faça **Redeploy**, porque os valores entram no site na hora do build.
+1. Cadastre `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` e as variáveis de IA necessárias em **Settings → Environment Variables**. A chave Supabase anon é pública; não cadastre a `service_role`.
+2. Adicione o domínio de produção em **Authentication → URL Configuration** no Supabase, como Site URL e URL de redirecionamento permitida.
+3. Faça o push para a `main`: o Vercel gera o build automaticamente.
+4. Se mudar alguma variável, faça **Redeploy**, porque os valores entram no site na hora do build.
 
 O `vercel.json` redireciona `/gutenberg/*` para o gutenberg.org e `/gutenberg-mirror/*` para o espelho oficial `aleph.pglaf.org`, já que os arquivos de texto do Gutenberg não liberam acesso direto pelo navegador (CORS).
 
 ## Limitações conhecidas
 
+- O Supabase autentica usuários e persiste suas sessões. Os livros importados e dados de leitura ainda ficam neste navegador e não são sincronizados entre dispositivos/contas.
 - **As chaves de IA ficam visíveis no navegador.** O prefixo `VITE_` inclui os valores no JavaScript do site. Antes de abrir para o público, o ideal é mover as chamadas para uma função serverless no Vercel, com a chave privada e limite de mensagens por usuário.
 - **Cotas gratuitas:** no Groq, cada modelo aceita cerca de 1.000 mensagens por dia e 8.000 tokens por minuto. Com três modelos, isso dá cerca de 3.000 mensagens por dia e uns 12 envios por minuto no total.
 - **Busca do Gutenberg:** responde em cerca de 2 segundos, mas a relevância é a do próprio site ("poe" também encontra livros de poemas) e o total de resultados só aparece quando cabe numa página.
@@ -191,4 +207,4 @@ O `vercel.json` redireciona `/gutenberg/*` para o gutenberg.org e `/gutenberg-mi
 
 ---
 
-Textos em domínio público do [Project Gutenberg](https://www.gutenberg.org). Desenvolvido por **Guilherme Pinheiro**.
+Textos em domínio público do [Project Gutenberg](https://www.gutenberg.org). Desenvolvido por **Axyon Software House**.
