@@ -1,0 +1,31 @@
+name: edge
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      FOODIE_DOMAIN: staging.2.29.42.104.sslip.io
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /home/deploy/storyverse/web:/srv/storyverse:ro
+      - edge_data:/data
+      - edge_config:/config
+    networks:
+      - foodie
+      - storyverse
+
+networks:
+  foodie:
+    external: true
+    name: foodie-staging_default
+  storyverse:
+    external: true
+    name: storyverse_default
+
+volumes:
+  edge_data:
+  edge_config:

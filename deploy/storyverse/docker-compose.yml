@@ -1,0 +1,45 @@
+name: storyverse
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-storyverse}
+      POSTGRES_USER: ${POSTGRES_USER:-storyverse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - storyverse_db_data:/var/lib/postgresql/data
+      # Aplica o schema no primeiro boot (só roda com o volume vazio).
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # Cópia acessível para reaplicar depois (o script é idempotente):
+      #   docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -f /schema.sql
+      - ./schema.sql:/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - storyverse
+
+  # Marco 2: o backend (story-magic-api) entra aqui, conecta em db:5432 e mais
+  # ninguém publica 5432 no host.
+  # api:
+  #   build: ../../../story-magic-api
+  #   restart: unless-stopped
+  #   environment:
+  #     DATABASE_URL: postgres://${POSTGRES_USER:-storyverse}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-storyverse}
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   networks:
+  #     - storyverse
+
+networks:
+  storyverse:
+    external: true
+    name: storyverse_default
+
+volumes:
+  storyverse_db_data:

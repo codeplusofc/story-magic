@@ -1,0 +1,68 @@
+name: Deploy Storyverse (VPS)
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [vps]
+    paths-ignore:
+      - "story-magic-api/**"
+      - ".github/workflows/story-magic-api.yml"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-storyverse
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Testar
+        run: npm test
+
+      - name: Montar o site (build)
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_EMAIL_OTP_ENABLED: ${{ secrets.VITE_SUPABASE_EMAIL_OTP_ENABLED }}
+          VITE_LOGIN_REQUIRED: ${{ secrets.VITE_LOGIN_REQUIRED }}
+          VITE_GROQ_API_KEY: ${{ secrets.VITE_GROQ_API_KEY }}
+          VITE_GROQ_MODELS: ${{ secrets.VITE_GROQ_MODELS }}
+          VITE_GEMINI_API_KEY: ${{ secrets.VITE_GEMINI_API_KEY }}
+          VITE_GEMINI_MODEL: ${{ secrets.VITE_GEMINI_MODEL }}
+          VITE_OPENROUTER_API_KEY: ${{ secrets.VITE_OPENROUTER_API_KEY }}
+          VITE_OPENROUTER_MODELS: ${{ secrets.VITE_OPENROUTER_MODELS }}
+        run: npm run build
+
+      - name: Configurar chave SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Enviar o build para a VPS
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_deploy" \
+            dist/ \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/home/deploy/storyverse/_incoming/"
+
+      - name: Publicar (troca a versão e confere)
+        run: |
+          ssh -i ~/.ssh/id_deploy \
+            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            'bash /home/deploy/storyverse/deploy/publish.sh'

@@ -1,0 +1,44 @@
+# ── Foodie (staging) — mesmas rotas do Caddyfile atual ──────────────
+staging.2.29.42.104.sslip.io,
+cliente.2.29.42.104.sslip.io,
+restaurante.2.29.42.104.sslip.io,
+entregador.2.29.42.104.sslip.io,
+admin.2.29.42.104.sslip.io {
+    encode zstd gzip
+    reverse_proxy foodie-staging-web-1:3001
+}
+
+api.staging.2.29.42.104.sslip.io {
+    encode zstd gzip
+    reverse_proxy foodie-staging-api-1:4001
+}
+
+# ── Storyverse (novo) ───────────────────────────────────────────────
+storyverse.2.29.42.104.sslip.io {
+    encode zstd gzip
+
+    # proxies públicos que hoje o Vercel faz (mesmos destinos do vercel.json/vite.config.ts)
+    handle /gutenberg-search* {
+        rewrite * /ebooks/search.opds/
+        reverse_proxy https://www.gutenberg.org
+    }
+    handle_path /gutenberg/* {
+        reverse_proxy https://www.gutenberg.org
+    }
+    handle_path /gutenberg-mirror/* {
+        reverse_proxy https://aleph.pglaf.org
+    }
+    handle_path /openlibrary/* {
+        reverse_proxy https://openlibrary.org
+    }
+    handle_path /ol-covers/* {
+        reverse_proxy https://covers.openlibrary.org
+    }
+
+    # site (arquivos estáticos) com fallback das telas internas (SPA)
+    handle {
+        root * /srv/storyverse/current
+        try_files {path} /index.html
+        file_server
+    }
+}
