@@ -37,7 +37,7 @@ storyverse.2.29.42.104.sslip.io {
 
     # site (arquivos estáticos) com fallback das telas internas (SPA)
     handle {
-        root * /srv/storyverse
+        root * /srv/storyverse/current
         try_files {path} /index.html
         file_server
     }

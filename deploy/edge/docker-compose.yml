@@ -11,7 +11,7 @@ services:
       FOODIE_DOMAIN: staging.2.29.42.104.sslip.io
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - /home/deploy/storyverse/web/current:/srv/storyverse:ro
+      - /home/deploy/storyverse/web:/srv/storyverse:ro
       - edge_data:/data
       - edge_config:/config
     networks:

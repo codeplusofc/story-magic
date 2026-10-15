@@ -215,7 +215,7 @@ services:
       FOODIE_DOMAIN: staging.2.29.42.104.sslip.io
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - /home/deploy/storyverse/web/current:/srv/storyverse:ro
+      - /home/deploy/storyverse/web:/srv/storyverse:ro
       - edge_data:/data
       - edge_config:/config
     networks:
@@ -276,8 +276,11 @@ storyverse.2.29.42.104.sslip.io {
     }
 
     # site (arquivos estáticos) com fallback das telas internas (SPA)
+    # O Caddy monta o diretório-pai `web/` e serve `web/current`.
+    # Montar `current` diretamente quebra a troca atômica: o `mv` do publish.sh
+    # substitui o diretório por outro inode e o contêiner continua servindo o antigo.
     handle {
-        root * /srv/storyverse
+        root * /srv/storyverse/current
         try_files {path} /index.html
         file_server
     }
