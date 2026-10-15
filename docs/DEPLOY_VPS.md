@@ -399,10 +399,43 @@ errado.
 
 ---
 
-## 13. O que vem depois (Marco 2)
+## 13. Banco próprio (stack `storyverse`)
 
-- O backend (Spring) entra como serviço no stack `storyverse` (`api`).
+O banco do Storyverse é um Postgres no stack `storyverse`, **sem portas publicadas**
+(só visível na rede `storyverse_default`, onde a borda também está). Arquivos no
+repositório em `deploy/storyverse/`; na VPS:
+
+```
+/home/deploy/storyverse/
+├── docker-compose.yml     (stack: serviço db, projeto `storyverse`)
+├── schema.sql             (cópia de database/schema.sql)
+├── .env                   (POSTGRES_*; nunca versionado)
+├── deploy/publish.sh      (site)
+└── web/{current,previous} (site)
+```
+
+O `schema.sql` é aplicado **automaticamente no primeiro boot** (volume vazio). Para
+reaplicar depois de atualizá-lo (o script é idempotente):
+
+```bash
+cd /home/deploy/storyverse
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -v ON_ERROR_STOP=1 -f /schema.sql
+```
+
+Conferir:
+
+```bash
+docker compose ps
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c '\dt public.*'
+```
+
+## 14. O que vem depois (Marco 2)
+
+- O backend (Spring) entra como serviço `api` no stack `storyverse` (bloco comentado no
+  `docker-compose.yml`); conecta em `db:5432` e nunca publica o banco no host.
 - O Caddy de borda ganha o bloco `api.storyverse.…` apontando para esse serviço.
 - O build da API passa pelo GitHub Actions → imagem no GHCR → a VPS faz `pull`.
 - As chaves de IA saem do site e passam para o servidor.
-- Nova documentação de deploy será acrescentada aqui.
+- A migração dos dados (contas, progresso, diamantes, envios) vem do Supabase
+  (`pg_dump` + Storage) — **Marco 3**.
